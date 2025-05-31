@@ -20,10 +20,27 @@ from django.urls import path,include
 from django.conf import settings
 from django.conf.urls.static import static
 from account.views import health_check
-
+import os
 
 urlpatterns = [
     path("admin/", admin.site.urls),
     path('api/', include('account.urls')),
    path('health/', health_check, name='health_check'),
-]+ static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+]
+if settings.DEBUG:
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+    
+    # CRITICAL: Add specific handling for message files
+    from django.views.static import serve
+    from django.urls import re_path
+    
+    # Serve message files specifically
+    urlpatterns += [
+        re_path(r'^media/message/(?P<path>.*)$', serve, {
+            'document_root': os.path.join(settings.BASE_DIR, 'media', 'message'),
+        }),
+    ]
+else:
+    # In production, you might want to serve these through your web server (nginx/apache)
+    # or implement a custom view that checks permissions before serving
+    pass

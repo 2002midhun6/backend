@@ -244,7 +244,6 @@ class FileUploadView(APIView):
 
     def post(self, request, job_id):
         try:
-            # Add logging to debug request
             logger.info(f"FileUploadView accessed: job_id={job_id}, user={request.user.email}")
             logger.info(f"Request FILES: {request.FILES}")
             
@@ -303,23 +302,27 @@ class FileUploadView(APIView):
                 content=''
             )
             logger.info(f"Created message with file: message_id={message.id}, file_type={file_type}")
+            
+            # Set the absolute URL for the local file
             if message.file:
-                message.file_absolute_url = request.build_absolute_uri(message.file.url)
+                file_url = f'/media/message/{message.file.name}'
+                message.file_absolute_url = request.build_absolute_uri(file_url)
                 message.save(update_fields=['file_absolute_url'])
-            # Send a WebSocket notification
+                logger.info(f"Set file absolute URL: {message.file_absolute_url}")
+
+            # Send WebSocket notification
             from channels.layers import get_channel_layer
             from asgiref.sync import async_to_sync
             channel_layer = get_channel_layer()
             room_group_name = f'chat_{job_id}'
             
-            # Prepare message data for WebSocket
             message_data = {
                 'id': message.id,
                 'sender': message.sender.id,
                 'sender_name': message.sender.name,
                 'sender_role': message.sender.role,
                 'content': message.content,
-                'file_url': message.file_absolute_url or (request.build_absolute_uri(message.file.url) if message.file else None),
+                'file_url': message.file_absolute_url,
                 'file_type': message.file_type,
                 'created_at': message.created_at.isoformat(),
                 'is_read': False
@@ -2418,3 +2421,68 @@ class ProfessionalTransactionHistoryView(APIView):
                 {'error': f'Internal server error: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+from django.http import HttpResponse, Http404, FileResponse
+from django.views.decorators.csrf import csrf_exempt
+from django.contrib.auth.decorators import login_required
+from django.shortcuts import get_object_or_404
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+import os
+from pathlib import Path
+from .models import Message, JobApplication
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def serve_message_file(request, file_path):
+    """
+    Securely serve message files with permission checking
+    """
+    try:
+        # Reconstruct the full file path
+        full_path = os.path.join(settings.MEDIA_ROOT, 'message', file_path)
+        
+        # Security check - ensure the path is within our media directory
+        media_path = Path(settings.MEDIA_ROOT).resolve()
+        file_path_resolved = Path(full_path).resolve()
+        
+        if not str(file_path_resolved).startswith(str(media_path)):
+            raise Http404("File not found")
+        
+        if not os.path.exists(full_path):
+            raise Http404("File not found")
+        
+        # Find the message that owns this file
+        # Extract the filename from the path
+        filename = os.path.basename(file_path)
+        message = Message.objects.filter(file__icontains=filename).first()
+        
+        if not message:
+            raise Http404("File not found")
+        
+        # Check permissions
+        conversation = message.conversation
+        job = conversation.job
+        
+        # User must be either the client or an accepted professional
+        if request.user != job.client_id:
+            application = JobApplication.objects.filter(
+                job_id=job,
+                professional_id=request.user,
+                status='Accepted'
+            ).first()
+            if not application:
+                raise Http404("File not found")
+        
+        # Serve the file
+        return FileResponse(
+            open(full_path, 'rb'),
+            as_attachment=False,
+            filename=os.path.basename(full_path)
+        )
+        
+    except Exception as e:
+        raise Http404("File not found")
+
+# Add this to your account/urls.py
+# path('media/message/<path:file_path>', views.serve_message_file, name='serve_message_file'),

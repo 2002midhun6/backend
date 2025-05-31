@@ -24,25 +24,27 @@ class MessageSerializer(serializers.ModelSerializer):
     sender_name = serializers.SerializerMethodField()
     sender_role = serializers.SerializerMethodField()
     file_url = serializers.SerializerMethodField()
-    
+
     class Meta:
         model = Message
         fields = ['id', 'sender', 'sender_name', 'sender_role', 'content', 'file_url', 'file_type', 'created_at', 'is_read']
-    
+
     def get_sender_name(self, obj):
         return obj.sender.name if hasattr(obj.sender, 'name') else str(obj.sender)
-    
+
     def get_sender_role(self, obj):
         return obj.sender.role if hasattr(obj.sender, 'role') else 'unknown'
-    
+
     def get_file_url(self, obj):
         if obj.file_absolute_url:
             return obj.file_absolute_url
         elif obj.file:
             request = self.context.get('request')
             if request:
-                return request.build_absolute_uri(obj.file.url)
-            return obj.file.url
+                # Build absolute URI for local files
+                file_url = f'/media/message/{obj.file.name}'
+                return request.build_absolute_uri(file_url)
+            return f'/media/message/{obj.file.name}'
         return None
 
 class ConversationSerializer(serializers.ModelSerializer):

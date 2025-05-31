@@ -10,7 +10,7 @@ from django.conf import settings
 from django.core.validators import MinValueValidator, MaxValueValidator
 from cloudinary.models import CloudinaryField
 # Add this to your existing models.py file
-
+from .storage import LocalFileStorage
 class Notification(models.Model):
     NOTIFICATION_TYPES = [
         ('job_application', 'Job Application'),
@@ -184,7 +184,8 @@ class Job(models.Model):
         null=True,
         blank=True,
         resource_type='auto',  # Supports images, videos, and raw files (PDFs, docs, etc.)
-        folder='job_documents/',  # Organizes files in Cloudinary
+        folder='job_documents/',
+        transformation=[],  # Organizes files in Cloudinary
         help_text='Upload project documents, requirements, or reference files'
     )
 
@@ -403,12 +404,17 @@ class Message(models.Model):
     conversation = models.ForeignKey(Conversation, on_delete=models.CASCADE, related_name='messages')
     sender = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='sent_messages')
     content = models.TextField(blank=True, null=True)  # Allow blank for file-only messages
-    file = models.FileField(upload_to='chat_files/', blank=True, null=True)  # Store files in 'chat_files/' directory
+    file = models.FileField(
+        upload_to='%Y/%m/%d/', 
+        storage=LocalFileStorage(),
+        blank=True, 
+        null=True
+    )  # Store files in 'chat_files/' directory
     file_type = models.CharField(max_length=20, blank=True, null=True)  # E.g., 'image', 'document', 'text'
     created_at = models.DateTimeField(auto_now_add=True)
     is_read = models.BooleanField(default=False)
-    file = models.FileField(upload_to='conversation_files/%Y/%m/%d/', null=True, blank=True)
-    file_type = models.CharField(max_length=20, null=True, blank=True)
+    
+   
     
     # Add this new field to store the absolute URL
     file_absolute_url = models.URLField(max_length=500, null=True, blank=True)
@@ -417,3 +423,10 @@ class Message(models.Model):
     
     def __str__(self):
         return f"Message from {self.sender.name} at {self.created_at}"
+
+    def save(self, *args, **kwargs):
+        # Auto-generate absolute URL when file is saved
+        super().save(*args, **kwargs)
+        if self.file and not self.file_absolute_url:
+            # This will be set by the view after getting the request context
+            pass

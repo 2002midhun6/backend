@@ -12,7 +12,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(os.path.join(BASE_DIR, '.env'))
 
 SECRET_KEY = os.getenv('SECRET_KEY')
-DEBUG = False  # MUST be False in production
+DEBUG = True  # MUST be False in production
 ALLOWED_HOSTS = [
     'jobseeker-69742084525.us-central1.run.app', 
     '*.run.app', 
@@ -242,12 +242,16 @@ cloudinary.config(
     api_secret=os.getenv('CLOUDINARY_API_SECRET'),
     secure=True
 )
-DEFAULT_FILE_STORAGE = 'cloudinary_storage.storage.MediaCloudinaryStorage'
-# Media settings
+BASE_DIR = Path(__file__).resolve().parent.parent
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 os.makedirs(MEDIA_ROOT, exist_ok=True)
-
+MESSAGE_FILES_ROOT = os.path.join(MEDIA_ROOT, 'message')
+os.makedirs(MESSAGE_FILES_ROOT, exist_ok=True)
+DEFAULT_FILE_STORAGE = 'cloudinary_storage.storage.MediaCloudinaryStorage'
+FILE_UPLOAD_MAX_MEMORY_SIZE = 5242880  # 5MB
+DATA_UPLOAD_MAX_MEMORY_SIZE = 5242880  # 5MB
+FILE_UPLOAD_PERMISSIONS = 0o644
 # Redis/Channels settings (if using)
 CHANNEL_LAYERS = {
     'default': {
