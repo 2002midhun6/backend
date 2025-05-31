@@ -1,7 +1,7 @@
 from django.urls import path
 from .views import RegisterView, LoginView, LogoutView, VerifyOTPView, ForgotPasswordView, ResetPasswordView, AcceptJobApplicationView, JobDetailView, RequestVerificationView, AdminVerifyProfessionalView, ProfessionalJobApplicationsView, SubmitReviewView, AdminJobsView, ComplaintListCreateView, AdminComplaintListView, ConversationView, UnreadMessagesCountView, CreateMissingConversationsView, FileUploadView,FileRecoveryView
 from .views import CheckAuthView, BlockUnblockUserView, ListUsersView, ProfessionalProfileView, JobCreateView, OpenJobsListView, ApplyToJobView, ClientProjectsView, JobApplicationsListView, AdminVerificationRequestsView, VerifyPaymentView, ClientPendingPaymentsView, ClientTransactionHistoryView, ComplaintDetailView, ProfessionalTransactionHistoryView, UserConversationsView, CheckJobStatesView, WebSocketAuthTokenView
-from .views import UserCountsView, JobCountsView,PaymentTotalView,ResendOTPView,TokenRefreshView
+from .views import UserCountsView, JobCountsView,PaymentTotalView,ResendOTPView,TokenRefreshView,ComplaintFeedbackView, AdminComplaintResponseView
 from account.views import (
     NotificationListView,
     NotificationCountView,
@@ -40,7 +40,12 @@ urlpatterns = [
     path('client/transactions/', ClientTransactionHistoryView.as_view(), name='client-transactions'),
     path('complaints/', ComplaintListCreateView.as_view(), name='complaint-list-create'),
     path('complaints/<int:pk>/', ComplaintDetailView.as_view(), name='complaint-detail'),
+    path('complaints/<int:pk>/feedback/', ComplaintFeedbackView.as_view(), name='complaint-feedback'),  # MISSING URL
+    
+    # Admin complaint endpoints
     path('admin/complaints/', AdminComplaintListView.as_view(), name='admin-complaint-list'),
+    path('admin/complaints/<int:pk>/respond/', AdminComplaintResponseView.as_view(), name='admin-complaint-response'),  # MISSING URL
+
     path('professional/transactions/', ProfessionalTransactionHistoryView.as_view(), name='professional-transactions'),
     path('conversations/', UserConversationsView.as_view(), name='user_conversations'),
     path('conversations/job/<int:job_id>/', ConversationView.as_view(), name='conversation'),

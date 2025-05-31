@@ -50,7 +50,7 @@ MIDDLEWARE = [
 CORS_EXPOSE_HEADERS = ['Authorization']
 CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOWED_ORIGINS = [
-    'http://localhost:3000',
+    'http://localhost:5173',
     'https://midhung.in',
     'https://www.midhung.in',
     'https://jobseeker-69742084525.us-central1.run.app',

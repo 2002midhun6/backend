@@ -166,6 +166,7 @@ class Job(models.Model):
         choices=STATUS_CHOICES,
         default='Open'
     )
+
     created_at = models.DateTimeField(default=now)
     advance_payment = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     rating = models.IntegerField(
@@ -265,15 +266,43 @@ class Complaint(models.Model):
     STATUS_CHOICES = (
         ('PENDING', 'Pending'),
         ('IN_PROGRESS', 'In Progress'),
+        ('AWAITING_USER_RESPONSE', 'Awaiting User Response'),
+        ('NEEDS_FURTHER_ACTION', 'Needs Further Action'),
         ('RESOLVED', 'Resolved'),
         ('CLOSED', 'Closed'),
     )
-
+    # NEW FIELDS for enhanced functionality
+    admin_response = models.TextField(blank=True, null=True)
+    responded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, 
+        on_delete=models.SET_NULL, 
+        null=True, 
+        blank=True, 
+        related_name='responded_complaints'
+    )
+    response_date = models.DateTimeField(null=True, blank=True)
+    
+    # Client feedback fields
+    client_feedback = models.TextField(blank=True, null=True)
+    resolution_rating = models.PositiveSmallIntegerField(
+        null=True, 
+        blank=True,
+        validators=[MinValueValidator(1), MaxValueValidator(5)]
+    )
+    feedback_date = models.DateTimeField(null=True, blank=True)
+    
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='complaints')
     description = models.TextField()
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING')
+    status = models.CharField(max_length=30, choices=STATUS_CHOICES, default='PENDING')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    @property
+    def can_mark_resolved(self):
+        return self.status == 'AWAITING_USER_RESPONSE'
+    
+    @property
+    def responded_by_name(self):
+        return self.responded_by.name if self.responded_by else None
 
     class Meta:
         ordering = ['-created_at']

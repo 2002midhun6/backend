@@ -546,15 +546,96 @@ class ComplaintDetailView(generics.RetrieveUpdateAPIView):
         user = request.user
         complaint = self.get_object()
         
-        # Only staff/admin can update status
-        if 'status' in request.data and not (user.is_superuser or user.is_staff):
-            return Response(
-                {'error': 'Only admins can update complaint status'},
-                status=status.HTTP_403_FORBIDDEN
-            )
+        # Only allow clients to mark as resolved if status is AWAITING_USER_RESPONSE
+        if 'status' in request.data:
+            new_status = request.data['status']
+            if new_status == 'RESOLVED' and complaint.status == 'AWAITING_USER_RESPONSE':
+                # Client is marking as resolved - allow this
+                pass
+            elif user.is_superuser or user.is_staff:
+                # Admin can update any status
+                pass
+            else:
+                return Response(
+                    {'error': 'You can only mark complaints as resolved when awaiting your response'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
             
         return super().patch(request, *args, **kwargs)
-
+class ComplaintFeedbackView(APIView):
+    """
+    View for submitting client feedback on admin responses
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def patch(self, request, pk):
+        try:
+            complaint = Complaint.objects.get(id=pk, user=request.user)
+        except Complaint.DoesNotExist:
+            return Response(
+                {'error': 'Complaint not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Validate that complaint can receive feedback
+        if complaint.status != 'AWAITING_USER_RESPONSE':
+            return Response(
+                {'error': 'Cannot provide feedback for this complaint status'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        client_feedback = request.data.get('client_feedback', '').strip()
+        resolution_rating = request.data.get('resolution_rating')
+        
+        if not client_feedback:
+            return Response(
+                {'error': 'Feedback text is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Validate rating if provided
+        if resolution_rating is not None:
+            try:
+                resolution_rating = int(resolution_rating)
+                if resolution_rating < 1 or resolution_rating > 5:
+                    raise ValueError
+            except (ValueError, TypeError):
+                return Response(
+                    {'error': 'Rating must be between 1 and 5'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        
+        # Update complaint with feedback
+        complaint.client_feedback = client_feedback
+        complaint.resolution_rating = resolution_rating
+        complaint.feedback_date = timezone.now()
+        complaint.status = 'NEEDS_FURTHER_ACTION'
+        complaint.save()
+        
+        # Notify admin about the feedback
+        try:
+            # Create notification for admin staff
+            admin_users = CustomUser.objects.filter(is_staff=True)
+            for admin in admin_users:
+                Notification.objects.create(
+                    user=admin,
+                    notification_type='complaint',
+                    title=f'Complaint #{complaint.id} needs further action',
+                    message=f'User {complaint.user.email} provided feedback on complaint response and needs further assistance.',
+                    data={
+                        'complaint_id': complaint.id,
+                        'user_email': complaint.user.email,
+                        'rating': resolution_rating,
+                        'action_required': 'review_feedback'
+                    }
+                )
+            
+            
+        except Exception as e:
+            print(f"Error sending feedback notification: {str(e)}")
+        
+        serializer = ComplaintSerializer(complaint, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
 class AdminComplaintListView(generics.ListAPIView):
     """
     Admin view for listing all complaints with filtering options
@@ -563,10 +644,9 @@ class AdminComplaintListView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
     
     def get_permissions(self):
-        permissions = super().get_permissions()
-        if not self.request.user.is_staff and not self.request.user.is_superuser:
+        if not (self.request.user.is_staff or self.request.user.is_superuser):
             return [IsAdminUser()]
-        return permissions
+        return super().get_permissions()
     
     def get_queryset(self):
         queryset = Complaint.objects.all().order_by('-created_at')
@@ -581,10 +661,88 @@ class AdminComplaintListView(generics.ListAPIView):
         if search:
             queryset = queryset.filter(
                 Q(description__icontains=search) | 
-                Q(user__email__icontains=search)
+                Q(user__email__icontains=search) |
+                Q(id__icontains=search)
             )
             
         return queryset
+class AdminComplaintResponseView(APIView):
+    """
+    Admin view for responding to complaints
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def patch(self, request, pk):
+        if not (request.user.is_staff or request.user.is_superuser):
+            return Response(
+                {'error': 'Only admin users can respond to complaints'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        try:
+            complaint = Complaint.objects.get(id=pk)
+        except Complaint.DoesNotExist:
+            return Response(
+                {'error': 'Complaint not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        admin_response = request.data.get('admin_response', '').strip()
+        if not admin_response:
+            return Response(
+                {'error': 'Response text is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Update complaint with admin response
+        complaint.admin_response = admin_response
+        complaint.responded_by = request.user
+        complaint.response_date = timezone.now()
+        complaint.status = 'AWAITING_USER_RESPONSE'
+        complaint.save()
+        
+        # Create notification for the user
+        try:
+            Notification.objects.create(
+                user=complaint.user,
+                notification_type='complaint',
+                title=f'Response to your complaint #{complaint.id}',
+                message=f'An admin has responded to your complaint. Please review the response and let us know if it resolves your issue.',
+                data={
+                    'complaint_id': complaint.id,
+                    'response_preview': admin_response[:100] + '...' if len(admin_response) > 100 else admin_response,
+                    'action_required': 'review_response'
+                }
+            )
+            
+            # Send email notification to user
+            send_mail(
+                subject=f'Response to Your Complaint #{complaint.id}',
+                message=f"""
+                Dear {complaint.user.name},
+                
+                We have reviewed your complaint and provided a response.
+                
+                Original Issue: {complaint.description[:200]}...
+                
+                Our Response: {admin_response}
+                
+                Please log in to your account to review the full response and let us know if this resolves your issue or if you need further assistance.
+                
+                Thank you for your patience.
+                
+                Best regards,
+                Customer Support Team
+                """,
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[complaint.user.email],
+                fail_silently=True
+            )
+        except Exception as e:
+            print(f"Error sending response notification: {str(e)}")
+        
+        serializer = ComplaintSerializer(complaint, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
 class ClientPendingPaymentsView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -1099,6 +1257,7 @@ class JobDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, job_id):
+        """Get job details"""
         if request.user.role != 'client':
             return Response(
                 {'error': 'Only clients can view job details'},
@@ -1106,10 +1265,11 @@ class JobDetailView(APIView):
             )
 
         job = get_object_or_404(Job, job_id=job_id, client_id=request.user)
-        serializer = JobSerializer(job)
+        serializer = JobSerializer(job, context={'request': request})
         return Response(serializer.data)
 
     def put(self, request, job_id):
+        """Update/Edit job - only allowed if no applicants"""
         if request.user.role != 'client':
             return Response(
                 {'error': 'Only clients can edit jobs'},
@@ -1117,25 +1277,67 @@ class JobDetailView(APIView):
             )
 
         job = get_object_or_404(Job, job_id=job_id, client_id=request.user)
+        
+        # Check if job is still open
         if job.status != 'Open':
             return Response(
                 {'error': 'Only open projects can be edited'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        if job.applications.exists():
+        
+        # Check if there are any applicants
+        applicants_count = job.applications.count()
+        if applicants_count > 0:
             return Response(
-                {'error': 'Cannot edit jobs with applicants'},
+                {'error': f'Cannot edit project with {applicants_count} applicant(s). Projects can only be edited when there are no applicants.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        serializer = JobSerializer(job, data=request.data, partial=True)
+        # Validate and update the job
+        serializer = JobSerializer(job, data=request.data, partial=True, context={'request': request})
         if serializer.is_valid():
             serializer.save()
-            return Response(
-                {'message': 'Project updated successfully'},
-                status=status.HTTP_200_OK
-            )
+            return Response({
+                'message': 'Project updated successfully',
+                'job': serializer.data
+            }, status=status.HTTP_200_OK)
+        
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, job_id):
+        """Delete job - only allowed if no applicants"""
+        if request.user.role != 'client':
+            return Response(
+                {'error': 'Only clients can delete jobs'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        job = get_object_or_404(Job, job_id=job_id, client_id=request.user)
+        
+        # Check if job can be deleted (only open jobs)
+        if job.status != 'Open':
+            return Response(
+                {'error': 'Only open projects can be deleted'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Check if there are any applicants
+        applicants_count = job.applications.count()
+        if applicants_count > 0:
+            return Response(
+                {'error': f'Cannot delete project with {applicants_count} applicant(s). Projects can only be deleted when there are no applicants.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Store job title for response message
+        job_title = job.title
+        
+        # Delete the job
+        job.delete()
+        
+        return Response({
+            'message': f'Project "{job_title}" has been successfully deleted'
+        }, status=status.HTTP_200_OK)
 class JobApplicationsListView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -1351,6 +1553,13 @@ from rest_framework import status
 from .models import JobApplication
 from .serializers import JobApplicationSerializer
 
+# views.py - Enhanced Professional Job Applications View
+
+from django.core.mail import send_mail
+from django.template.loader import render_to_string
+from django.conf import settings
+from .models import Notification
+
 class ProfessionalJobApplicationsView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -1366,6 +1575,145 @@ class ProfessionalJobApplicationsView(APIView):
         return Response({
             'applications': serializer.data
         }, status=status.HTTP_200_OK)
+
+    def send_completion_notification_and_email(self, job, professional, client):
+        """Send notification and email when project is completed"""
+        try:
+            # Create notification for client
+            Notification.objects.create(
+                user=client,
+                notification_type='job_status',
+                title='Project Completed! 🎉',
+                message=f'Your project "{job.title}" has been marked as completed by {professional.name}.',
+                data={
+                    'job_id': job.job_id,
+                    'professional_id': professional.id,
+                    'professional_name': professional.name,
+                    'job_title': job.title,
+                    'action_required': 'review_and_rate'
+                }
+            )
+            
+            # Send email to client
+            subject = f'Project Completed: {job.title}'
+            
+            # Create email context
+            email_context = {
+                'client_name': client.name,
+                'professional_name': professional.name,
+                'job_title': job.title,
+                'job_description': job.description[:200] + '...' if len(job.description) > 200 else job.description,
+                'budget': job.budget,
+                'completion_date': timezone.now().strftime('%B %d, %Y'),
+                'login_url': f"{settings.FRONTEND_URL}/login" if hasattr(settings, 'FRONTEND_URL') else "your-website.com/login",
+                'project_url': f"{settings.FRONTEND_URL}/client-projects" if hasattr(settings, 'FRONTEND_URL') else "your-website.com/client-projects"
+            }
+            
+            # HTML email template
+            html_message = f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <style>
+                    body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
+                    .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+                    .header {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }}
+                    .content {{ background: #f8f9fa; padding: 30px; border-radius: 0 0 10px 10px; }}
+                    .highlight {{ background: #e3f2fd; padding: 15px; border-left: 4px solid #2196f3; margin: 20px 0; border-radius: 5px; }}
+                    .button {{ display: inline-block; background: #28a745; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; margin: 10px 5px; }}
+                    .project-details {{ background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border: 1px solid #e0e0e0; }}
+                    .footer {{ text-align: center; color: #666; margin-top: 30px; font-size: 14px; }}
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <div class="header">
+                        <h1>🎉 Project Completed!</h1>
+                        <p>Great news about your project</p>
+                    </div>
+                    
+                    <div class="content">
+                        <p>Dear {email_context['client_name']},</p>
+                        
+                        <div class="highlight">
+                            <strong>Excellent news!</strong> Your project has been successfully completed by {email_context['professional_name']}.
+                        </div>
+                        
+                        <div class="project-details">
+                            <h3>📋 Project Details</h3>
+                            <p><strong>Project:</strong> {email_context['job_title']}</p>
+                            <p><strong>Professional:</strong> {email_context['professional_name']}</p>
+                            <p><strong>Budget:</strong> ₹{email_context['budget']}</p>
+                            <p><strong>Completed on:</strong> {email_context['completion_date']}</p>
+                            <p><strong>Description:</strong> {email_context['job_description']}</p>
+                        </div>
+                        
+                        <h3>🎯 Next Steps:</h3>
+                        <ul>
+                            <li>Review the completed work</li>
+                            <li>Rate and review the professional's performance</li>
+                            <li>Complete any remaining payment if applicable</li>
+                        </ul>
+                        
+                        <div style="text-align: center; margin: 30px 0;">
+                            <a href="{email_context['project_url']}" class="button">View Project Details</a>
+                            <a href="{email_context['login_url']}" class="button" style="background: #17a2b8;">Login to Dashboard</a>
+                        </div>
+                        
+                        <p>Thank you for using our platform! We hope you had a great experience working with {email_context['professional_name']}.</p>
+                        
+                        <div class="footer">
+                            <p>This is an automated notification. Please do not reply to this email.</p>
+                            <p>If you have any questions, please contact our support team.</p>
+                        </div>
+                    </div>
+                </div>
+            </body>
+            </html>
+            """
+            
+            # Plain text version
+            plain_message = f"""
+            Project Completed!
+            
+            Dear {email_context['client_name']},
+            
+            Great news! Your project "{email_context['job_title']}" has been successfully completed by {email_context['professional_name']}.
+            
+            Project Details:
+            - Project: {email_context['job_title']}
+            - Professional: {email_context['professional_name']}
+            - Budget: ₹{email_context['budget']}
+            - Completed on: {email_context['completion_date']}
+            
+            Next Steps:
+            1. Review the completed work
+            2. Rate and review the professional's performance
+            3. Complete any remaining payment if applicable
+            
+            Please log in to your dashboard to view the project details and provide your feedback.
+            
+            Thank you for using our platform!
+            
+            Best regards,
+            The Team
+            """
+            
+            # Send email
+            send_mail(
+                subject=subject,
+                message=plain_message,
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[client.email],
+                html_message=html_message,
+                fail_silently=False
+            )
+            
+            print(f"✅ Completion notification and email sent to {client.email}")
+            
+        except Exception as e:
+            print(f"❌ Error sending completion notification/email: {str(e)}")
+            # Don't fail the main operation if notification fails
 
     def post(self, request):
         action = request.data.get('action')  # 'complete' or 'cancel'
@@ -1414,6 +1762,14 @@ class ProfessionalJobApplicationsView(APIView):
                     job.status = 'Completed'
                     application.save()
                     job.save()
+                    
+                    # 🚀 Send completion notification and email to client
+                    self.send_completion_notification_and_email(
+                        job=job,
+                        professional=request.user,
+                        client=job.client_id
+                    )
+                    
                     return Response(
                         {'message': 'Job marked as completed successfully'},
                         status=status.HTTP_200_OK
@@ -1453,11 +1809,54 @@ class ProfessionalJobApplicationsView(APIView):
                     status='pending'
                 )
 
+                # 📧 Send payment request notification and email to client
+                try:
+                    # Create notification for payment request
+                    Notification.objects.create(
+                        user=job.client_id,
+                        notification_type='payment',
+                        title='Payment Request - Project Completion',
+                        message=f'{request.user.name} has completed your project "{job.title}" and is requesting the remaining payment of ₹{remaining_amount}.',
+                        data={
+                            'job_id': job.job_id,
+                            'payment_request_id': payment_request.request_id,
+                            'amount': str(remaining_amount),
+                            'payment_type': 'remaining',
+                            'action_required': 'complete_payment'
+                        }
+                    )
+                    
+                    # Send payment request email
+                    payment_subject = f'Payment Request: {job.title}'
+                    payment_message = f"""
+                    Dear {job.client_id.name},
+                    
+                    Good news! {request.user.name} has successfully completed your project "{job.title}".
+                    
+                    A remaining payment of ₹{remaining_amount} is now due. Please log in to your dashboard to complete the payment.
+                    
+                    Project Details:
+                    - Project: {job.title}
+                    - Professional: {request.user.name}
+                    - Remaining Amount: ₹{remaining_amount}
+                    
+                    Thank you!
+                    """
+                    
+                    send_mail(
+                        subject=payment_subject,
+                        message=payment_message,
+                        from_email=settings.DEFAULT_FROM_EMAIL,
+                        recipient_list=[job.client_id.email],
+                        fail_silently=True
+                    )
+                    
+                except Exception as e:
+                    print(f"Error sending payment request notification: {str(e)}")
+
                 # Log for debugging
                 print(f"Created PaymentRequest: ID={payment_request.request_id}, PaymentID={payment.id}, Client={job.client_id.email}")
 
-                # Send email notification to client (optional)
-                
                 # Return response indicating payment is pending
                 return Response({
                     'message': 'Payment request sent to client',
@@ -1471,10 +1870,55 @@ class ProfessionalJobApplicationsView(APIView):
                         {'error': 'This job is not currently assigned to you'},
                         status=status.HTTP_400_BAD_REQUEST
                     )
+                
+                # Update status
                 application.status = 'Cancelled'
                 job.status = 'Open'
                 application.save()
                 job.save()
+                
+                # 📧 Send cancellation notification to client
+                try:
+                    Notification.objects.create(
+                        user=job.client_id,
+                        notification_type='job_status',
+                        title='Project Cancelled',
+                        message=f'{request.user.name} has cancelled your project "{job.title}". The project is now open for new applications.',
+                        data={
+                            'job_id': job.job_id,
+                            'professional_id': request.user.id,
+                            'professional_name': request.user.name,
+                            'job_title': job.title,
+                            'action_required': 'find_new_professional'
+                        }
+                    )
+                    
+                    # Send cancellation email
+                    cancellation_subject = f'Project Cancelled: {job.title}'
+                    cancellation_message = f"""
+                    Dear {job.client_id.name},
+                    
+                    We regret to inform you that {request.user.name} has cancelled your project "{job.title}".
+                    
+                    Your project is now open again and you can receive new applications from other professionals.
+                    
+                    If you have any questions, please contact our support team.
+                    
+                    Best regards,
+                    The Team
+                    """
+                    
+                    send_mail(
+                        subject=cancellation_subject,
+                        message=cancellation_message,
+                        from_email=settings.DEFAULT_FROM_EMAIL,
+                        recipient_list=[job.client_id.email],
+                        fail_silently=True
+                    )
+                    
+                except Exception as e:
+                    print(f"Error sending cancellation notification: {str(e)}")
+                
                 return Response(
                     {'message': 'Job cancelled successfully'},
                     status=status.HTTP_200_OK
@@ -1488,6 +1932,9 @@ class ProfessionalJobApplicationsView(APIView):
         except Exception as e:
             print(f"Error in ProfessionalJobApplicationsView: {str(e)}")
             return Response({'error': f'An error occurred: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+
 class VerifyPaymentView(APIView):
     permission_classes = [IsAuthenticated]
 
