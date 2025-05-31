@@ -12,7 +12,7 @@ from datetime import date
 from .models import Complaint,Conversation,Message
 from rest_framework import serializers
 from .models import Message
-
+import urllib.parse
 from .models import Notification
 
 class NotificationSerializer(serializers.ModelSerializer):
@@ -260,7 +260,7 @@ class UserSerializer(serializers.ModelSerializer):
         fields = ['id', 'email', 'name', 'role', 'is_blocked', 'is_verified']
 class ProfessionalProfileSerializer(serializers.ModelSerializer):
     user = UserSerializer(read_only=True)
-    verify_doc = serializers.FileField(required=False)
+    verify_doc_url = serializers.SerializerMethodField()
     
     class Meta:
         model = ProfessionalProfile
@@ -271,16 +271,148 @@ class ProfessionalProfileSerializer(serializers.ModelSerializer):
             'availability_status',
             'portfolio_links',
             'verify_status',
+            'verify_doc',        # Cloudinary field
+            'verify_doc_url',    # URL for the document
             'avg_rating',
             'user',
             'verify_doc',
             'denial_reason',
         ]
+    def get_verify_doc_url(self, obj):
+        """Return the full URL of the verification document if it exists"""
+        return obj.get_verify_doc_url()
+
+    def validate_verify_doc(self, value):
+        """Validate the uploaded verification document"""
+        if value:
+            # Check file size (max 5MB)
+            if hasattr(value, 'size') and value.size > 5 * 1024 * 1024:
+                raise serializers.ValidationError("File size cannot exceed 5MB")
+            
+            # Check file type
+            allowed_types = [
+                'application/pdf',
+                'image/jpeg',
+                'image/jpg',
+                'image/png',
+                'image/gif',
+                'application/msword',
+                'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+            ]
+            
+            if hasattr(value, 'content_type') and value.content_type not in allowed_types:
+                raise serializers.ValidationError(
+                    "Unsupported file type. Please upload PDF, DOC, or image files."
+                )
+        
+        return value
+
+    def validate_bio(self, value):
+        """Validate bio field"""
+        if value and len(value.strip()) < 10:
+            raise serializers.ValidationError("Bio must be at least 10 characters long")
+        if value and len(value.strip()) > 500:
+            raise serializers.ValidationError("Bio cannot exceed 500 characters")
+        return value.strip() if value else value
+
+    def validate_skills(self, value):
+        """Validate skills field"""
+        if isinstance(value, str):
+            # If it's a string, try to parse as JSON
+            import json
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError:
+                # If not JSON, split by comma
+                value = [skill.strip() for skill in value.split(',') if skill.strip()]
+        
+        if not isinstance(value, list):
+            raise serializers.ValidationError("Skills must be a list")
+        
+        if len(value) == 0:
+            raise serializers.ValidationError("At least one skill is required")
+        
+        if len(value) > 10:
+            raise serializers.ValidationError("Cannot add more than 10 skills")
+        
+        # Validate each skill
+        for skill in value:
+            if not isinstance(skill, str) or len(skill.strip()) == 0:
+                raise serializers.ValidationError("Each skill must be a non-empty string")
+            if len(skill.strip()) > 50:
+                raise serializers.ValidationError("Each skill cannot exceed 50 characters")
+        
+        return [skill.strip() for skill in value]
+
+    def validate_portfolio_links(self, value):
+        """Validate portfolio links"""
+        if isinstance(value, str):
+            import json
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError:
+                value = [link.strip() for link in value.split(',') if link.strip()]
+        
+        if not isinstance(value, list):
+            raise serializers.ValidationError("Portfolio links must be a list")
+        
+        if len(value) > 5:
+            raise serializers.ValidationError("Cannot add more than 5 portfolio links")
+        
+        # Validate each URL
+        import re
+        url_pattern = re.compile(
+            r'^(https?://)?([\w.-]+)\.([a-z]{2,6})([/\w.-]*)*/?$',
+            re.IGNORECASE
+        )
+        
+        for link in value:
+            if link and not url_pattern.match(link):
+                raise serializers.ValidationError(f"Invalid URL: {link}")
+        
+        return [link.strip() for link in value if link.strip()]
+
+    def validate_experience_years(self, value):
+        """Validate experience years"""
+        if value < 0:
+            raise serializers.ValidationError("Experience years cannot be negative")
+        if value > 100:
+            raise serializers.ValidationError("Experience years cannot exceed 100")
+        return value
+
+    def update(self, instance, validated_data):
+        """Custom update method to handle verify_doc field properly"""
+        # Handle verify_doc field separately
+        verify_doc = validated_data.pop('verify_doc', None)
+        
+        # Update other fields
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        
+        # Handle verify_doc field
+        if verify_doc is not None:
+            if instance.verify_doc:
+                # Delete old document from Cloudinary
+                try:
+                    import cloudinary.uploader
+                    cloudinary.uploader.destroy(instance.verify_doc.public_id, resource_type='auto')
+                    logger.info(f"Deleted old verification document for user {instance.user.id}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete old verification document: {e}")
+            
+            # Set new document
+            instance.verify_doc = verify_doc
+            logger.info(f"Updated verification document for user {instance.user.id}")
+        
+        # Save the instance
+        instance.save()
+        return instance
 # accounts/serializers.py
 class JobSerializer(serializers.ModelSerializer):
     client_id = serializers.SerializerMethodField()
     client_name = serializers.CharField(source='client_id.name', read_only=True)  # Added
     applicants_count = serializers.SerializerMethodField()
+    document_url = serializers.SerializerMethodField()
 
     class Meta:
         model = Job
@@ -297,16 +429,25 @@ class JobSerializer(serializers.ModelSerializer):
             'client_name',  
             'applicants_count',
             'rating',
-            'review'
+            'review',
+            'document',      # NEW: Include the document field
+            'document_url',
         ]
-        read_only_fields = ['job_id', 'status', 'created_at', 'client_id', 'client_name', 'applicants_count', 'rating']
+        read_only_fields = ['job_id', 'status','document_url','created_at', 'client_id', 'client_name', 'applicants_count', 'rating']
 
     def get_client_id(self, obj):
         return UserSerializer(obj.client_id).data
 
     def get_applicants_count(self, obj):
         return obj.applications.count()
-
+    def get_document_url(self, obj):
+  
+        try:
+            if hasattr(obj, 'document') and obj.document:
+                return obj.document.url
+            return None
+        except AttributeError:
+            return None
     def validate_budget(self, value):
         if value <= 0:
             raise serializers.ValidationError("Budget must be greater than zero")
@@ -321,12 +462,81 @@ class JobSerializer(serializers.ModelSerializer):
         if value < date.today():
             raise serializers.ValidationError("Deadline cannot be in the past")
         return value
-
+    
+    def validate_document(self, value):
+            """Validate the uploaded document"""
+            if value:
+                # Check file size (e.g., max 10MB)
+                if hasattr(value, 'size') and value.size > 10 * 1024 * 1024:
+                    raise serializers.ValidationError("File size cannot exceed 10MB")
+                
+                # Check file type
+                allowed_types = [
+                    'application/pdf',
+                    'application/msword',
+                    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                    'application/vnd.ms-excel',
+                    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                    'image/jpeg',
+                    'image/png',
+                    'image/gif',
+                    'text/plain'
+                ]
+                
+                if hasattr(value, 'content_type') and value.content_type not in allowed_types:
+                    raise serializers.ValidationError(
+                        "Unsupported file type. Please upload PDF, DOC, XLS, images, or text files."
+                    )
+            
+            return value
     def validate(self, data):
         if 'advance_payment' in data and 'budget' in data and data['advance_payment'] is not None:
             if data['advance_payment'] > data['budget']:
                 raise serializers.ValidationError("Advance payment cannot exceed budget")
         return data
+    def update(self, instance, validated_data):
+        """Custom update method to handle document field properly"""
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        # Handle document field separately
+        document = validated_data.pop('document', None)
+        
+        # Update other fields
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        
+        # Handle document field
+        if document is not None:
+            if document == '':
+                # Empty string means remove the document
+                if instance.document:
+                    logger.info(f"Removing document for job {instance.job_id}")
+                    # Delete from Cloudinary
+                    try:
+                        import cloudinary.uploader
+                        cloudinary.uploader.destroy(instance.document.public_id, resource_type='auto')
+                    except Exception as e:
+                        logger.warning(f"Failed to delete old document from Cloudinary: {e}")
+                    instance.document = None
+            else:
+                # New document uploaded
+                if instance.document:
+                    # Delete old document from Cloudinary
+                    try:
+                        import cloudinary.uploader
+                        cloudinary.uploader.destroy(instance.document.public_id, resource_type='auto')
+                        logger.info(f"Deleted old document for job {instance.job_id}")
+                    except Exception as e:
+                        logger.warning(f"Failed to delete old document from Cloudinary: {e}")
+                
+                # Set new document
+                instance.document = document
+                logger.info(f"Updated document for job {instance.job_id}")
+        
+        # Save the instance
+        instance.save()
+        return instance
 class JobApplicationSerializer(serializers.ModelSerializer):
     professional_id = serializers.PrimaryKeyRelatedField(
         queryset=CustomUser.objects.filter(role='professional'),
@@ -363,3 +573,63 @@ class JobApplicationSerializer(serializers.ModelSerializer):
         if JobApplication.objects.filter(job_id=job, professional_id=request_user).exists():
             raise serializers.ValidationError("You have already applied to this job.")
         return data
+# Add this to your serializers.py - Admin-specific serializer for verification
+
+class AdminVerificationSerializer(serializers.ModelSerializer):
+    user = UserSerializer(read_only=True)
+    verify_doc_url = serializers.SerializerMethodField()
+    verify_doc_filename = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = ProfessionalProfile
+        fields = [
+            'bio',
+            'skills',
+            'experience_years',
+            'availability_status',
+            'portfolio_links',
+            'verify_status',
+            'avg_rating',
+            'user',
+            'verify_doc',
+            'verify_doc_url',
+            'verify_doc_filename',
+            'denial_reason',
+        ]
+        read_only_fields = ['verify_doc_url', 'verify_doc_filename']
+
+    def get_verify_doc_url(self, obj):
+        """Return the full URL of the verification document if it exists"""
+        try:
+            if hasattr(obj, 'verify_doc') and obj.verify_doc:
+                return obj.verify_doc.url
+            return None
+        except Exception as e:
+            logger.error(f"Error getting document URL for user {obj.user.id}: {e}")
+            return None
+
+    def get_verify_doc_filename(self, obj):
+        """Extract filename from Cloudinary URL"""
+        try:
+            if hasattr(obj, 'verify_doc') and obj.verify_doc:
+                # Get the URL
+                url = obj.verify_doc.url
+                if url:
+                    # Extract filename from Cloudinary URL
+                    if 'cloudinary.com' in url:
+                        # Cloudinary URLs typically end with the filename
+                        parts = url.split('/')
+                        # Get the last part which should be the filename
+                        filename_with_extension = parts[-1]
+                        # Remove any query parameters
+                        filename = filename_with_extension.split('?')[0]
+                        # Decode URL encoding
+                        decoded_filename = urllib.parse.unquote(filename)
+                        return decoded_filename if decoded_filename else 'verification_document'
+                    else:
+                        # Fallback for other URLs
+                        return url.split('/')[-1].split('?')[0]
+            return 'verification_document'
+        except Exception as e:
+            logger.error(f"Error extracting filename for user {obj.user.id}: {e}")
+            return 'verification_document'

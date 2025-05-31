@@ -8,6 +8,7 @@ from django.contrib.auth.models import AbstractUser, BaseUserManager
 from django.utils.timezone import now
 from django.conf import settings
 from django.core.validators import MinValueValidator, MaxValueValidator
+from cloudinary.models import CloudinaryField
 # Add this to your existing models.py file
 
 class Notification(models.Model):
@@ -112,11 +113,44 @@ class ProfessionalProfile(models.Model):
     experience_years = models.PositiveIntegerField(default=0)
     availability_status = models.CharField(max_length=15, choices=AVAILABILITY_CHOICES, default='Available')
     portfolio_links = models.JSONField(default=list, blank=True)
-    verify_doc = models.FileField(upload_to='verification_docs/', blank=True, null=True)
+    verify_doc = CloudinaryField(
+        'verify_doc',
+        null=True,
+        blank=True,
+        resource_type='auto',  # Supports images and documents
+        folder='verification_documents/',  # Organizes files in Cloudinary
+        help_text='Upload verification document (ID, degree, certificate, etc.)'
+    )
     verify_status = models.CharField(max_length=15, choices=VERIFY_STATUS_CHOICES, default='Pending')
     avg_rating = models.FloatField(default=0.0)
     denial_reason = models.TextField(blank=True, null=True) 
+    def get_verify_doc_url(self):
+        """Get the full URL of the verification document if it exists"""
+        if self.verify_doc:
+            return self.verify_doc.url
+        return None
 
+    def get_verify_doc_public_id(self):
+        """Get the Cloudinary public ID of the verification document"""
+        if self.verify_doc:
+            return self.verify_doc.public_id
+        return None
+
+    def delete_verify_doc(self):
+        """Delete the verification document from Cloudinary"""
+        if self.verify_doc:
+            try:
+                import cloudinary.uploader
+                public_id = self.verify_doc.public_id
+                cloudinary.uploader.destroy(public_id, resource_type='auto')
+                self.verify_doc = None
+                self.save()
+                logger.info(f"Deleted verification document for user {self.user.id}")
+                return True
+            except Exception as e:
+                logger.error(f"Failed to delete verification document: {e}")
+                return False
+        return False
     def update_avg_rating(self):
         jobs = Job.objects.filter(
             applications__professional_id=self.user,
@@ -144,6 +178,16 @@ class Job(models.Model):
         ('Completed', 'Completed'),
         ('Closed', 'Closed'),
     ]
+     # NEW: Cloudinary document field
+    document = CloudinaryField(
+        'document',
+        null=True,
+        blank=True,
+        resource_type='auto',  # Supports images, videos, and raw files (PDFs, docs, etc.)
+        folder='job_documents/',  # Organizes files in Cloudinary
+        help_text='Upload project documents, requirements, or reference files'
+    )
+
     professional_id = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,  # Use SET_NULL to avoid deleting jobs when a professional is deleted
@@ -178,7 +222,42 @@ class Job(models.Model):
 
     def __str__(self):
         return self.title
+   
 
+    def get_document_url(self):
+        """Get the full URL of the uploaded document"""
+        if self.document:
+            return self.document.url
+        return None
+
+    def get_document_public_id(self):
+        """Get the Cloudinary public ID of the document"""
+        if self.document:
+            return self.document.public_id
+        return None
+
+# Step 2: Update your serializer method in account/serializers.py
+# In your JobSerializer class, update the get_document_url method:
+
+    def get_document_url(self, obj):
+        """Return the full URL of the document if it exists"""
+        if hasattr(obj, 'document') and obj.document:
+            return obj.document.url
+        return None
+
+    # Step 3: Alternative - Temporary fix for existing serializer
+    # If you want to avoid the error immediately while testing, you can update the serializer method to:
+
+    def get_document_url(self, obj):
+        """Return the full URL of the document if it exists - with error handling"""
+        try:
+            if hasattr(obj, 'document') and obj.document:
+                return obj.document.url
+            elif hasattr(obj, 'get_document_url'):
+                return obj.get_document_url()
+            return None
+        except AttributeError:
+            return None
 # accounts/models.py
 # accounts/models.py
 class JobApplication(models.Model):

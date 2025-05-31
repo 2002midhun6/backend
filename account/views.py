@@ -5,8 +5,10 @@ from rest_framework.response import Response
 from rest_framework import generics, permissions
 from rest_framework.views import APIView
 from django.contrib.auth import authenticate
+from django.db.models import Q
+from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework_simplejwt.tokens import RefreshToken
-from .serializers import UserRegistrationSerializer, UserLoginSerializer, ForgotPasswordSerializer, ResetPasswordSerializer,ProfessionalProfileSerializer
+from .serializers import UserRegistrationSerializer, UserLoginSerializer, ForgotPasswordSerializer, ResetPasswordSerializer,ProfessionalProfileSerializer,AdminVerificationSerializer
 from .models import CustomUser,ProfessionalProfile,Job,JobApplication
 from .models import PaymentRequest, Payment
 from backend.utils import send_otp_email
@@ -1070,10 +1072,18 @@ class ResetPasswordView(APIView):
 
 class ProfessionalProfileView(APIView):
     permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]  # Support file uploads
 
     def get(self, request):
         """Fetch the logged-in user's professional profile"""
         user = request.user
+        
+        if getattr(user, 'role', None) != 'professional':
+            return Response(
+                {'error': 'Only professionals can access profiles'}, 
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
         try:
             profile = ProfessionalProfile.objects.get(user=user)
             serializer = ProfessionalProfileSerializer(profile)
@@ -1083,9 +1093,10 @@ class ProfessionalProfileView(APIView):
 
     def post(self, request):
         """Create a professional profile for the authenticated user"""
-        print('POST /api/profile/ - Data:', request.data)
-       
         user = request.user
+        
+        logger.info(f"POST /api/profile/ - User: {user.id}, Data: {request.data}")
+        logger.info(f"POST /api/profile/ - Files: {request.FILES}")
         
         # Check authentication
         if not user.is_authenticated:
@@ -1099,25 +1110,50 @@ class ProfessionalProfileView(APIView):
         if ProfessionalProfile.objects.filter(user=user).exists():
             return Response({'error': 'Profile already exists'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Handle file upload
-        data = request.data.copy()
-        if 'verify_doc' in request.FILES:
-            data['verify_doc'] = request.FILES['verify_doc']
+        try:
+            # Test Cloudinary configuration before processing if file is uploaded
+            if 'verify_doc' in request.FILES:
+                try:
+                    import cloudinary.api
+                    cloudinary.api.ping()
+                    logger.info("Cloudinary configuration verified for profile creation")
+                except Exception as e:
+                    logger.error(f"Cloudinary configuration error: {e}")
+                    return Response(
+                        {'error': f'File upload service error: {str(e)}'},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                    )
 
-        # Deserialize and save the profile
-        serializer = ProfessionalProfileSerializer(data=data)
-        if serializer.is_valid():
-            serializer.save(user=user)
-            return Response({'message': 'Profile created successfully'}, status=status.HTTP_201_CREATED)
-        
-        # Debugging serializer errors
-        print('Serializer errors:', serializer.errors)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            # Create profile with serializer
+            serializer = ProfessionalProfileSerializer(data=request.data, context={'request': request})
+            if serializer.is_valid():
+                profile = serializer.save(user=user)
+                
+                logger.info(f"Profile created successfully for user {user.id}")
+                if profile.verify_doc:
+                    logger.info(f"Verification document uploaded: {profile.verify_doc.url}")
+                
+                return Response({
+                    'message': 'Profile created successfully',
+                    'profile': ProfessionalProfileSerializer(profile).data
+                }, status=status.HTTP_201_CREATED)
+            else:
+                logger.error(f"Profile creation failed with errors: {serializer.errors}")
+                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+                
+        except Exception as e:
+            logger.error(f"Unexpected error in profile creation: {str(e)}")
+            return Response(
+                {'error': 'An unexpected error occurred while creating the profile'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
     def patch(self, request):
-        print('PATCH /api/profile/ - Data:', request.data)
-        print('PATCH /api/profile/ - Files:', request.FILES)  # Add this to debug file uploads
+        """Update the professional profile"""
         user = request.user
+        
+        logger.info(f"PATCH /api/profile/ - User: {user.id}, Data: {request.data}")
+        logger.info(f"PATCH /api/profile/ - Files: {request.FILES}")
 
         if not user.is_authenticated:
             return Response({'error': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
@@ -1128,22 +1164,76 @@ class ProfessionalProfileView(APIView):
         try:
             profile = ProfessionalProfile.objects.get(user=user)
             
-            # Handle file upload
-            data = request.data.copy()
+            # Test Cloudinary configuration before processing if file is uploaded
             if 'verify_doc' in request.FILES:
-                data['verify_doc'] = request.FILES['verify_doc']
+                try:
+                    import cloudinary.api
+                    cloudinary.api.ping()
+                    logger.info("Cloudinary configuration verified for profile update")
+                except Exception as e:
+                    logger.error(f"Cloudinary configuration error: {e}")
+                    return Response(
+                        {'error': f'File upload service error: {str(e)}'},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                    )
             
-            serializer = ProfessionalProfileSerializer(profile, data=data, partial=True)
+            serializer = ProfessionalProfileSerializer(profile, data=request.data, partial=True, context={'request': request})
             if serializer.is_valid():
-                serializer.save()
-                return Response({'message': 'Profile updated successfully'}, status=status.HTTP_200_OK)
-           
-            print('Serializer errors:', serializer.errors)
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+                updated_profile = serializer.save()
+                
+                logger.info(f"Profile updated successfully for user {user.id}")
+                if updated_profile.verify_doc:
+                    logger.info(f"Verification document uploaded/updated: {updated_profile.verify_doc.url}")
+                
+                return Response({
+                    'message': 'Profile updated successfully',
+                    'profile': ProfessionalProfileSerializer(updated_profile).data
+                }, status=status.HTTP_200_OK)
+            else:
+                logger.error(f"Profile update failed with errors: {serializer.errors}")
+                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+                
         except ProfessionalProfile.DoesNotExist:
-            return Response({'error': 'Profile not found. Please create a profile first.'}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {'error': 'Profile not found. Please create a profile first.'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            logger.error(f"Unexpected error in profile update: {str(e)}")
+            return Response(
+                {'error': 'An unexpected error occurred while updating the profile'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    def delete(self, request):
+        """Delete the professional profile"""
+        user = request.user
+        
+        if not user.is_authenticated:
+            return Response({'error': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        if getattr(user, 'role', None) != 'professional':
+            return Response({'error': 'Only professionals can delete a profile'}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            profile = ProfessionalProfile.objects.get(user=user)
+            
+            # The signal will handle Cloudinary file deletion
+            profile.delete()
+            
+            logger.info(f"Profile deleted successfully for user {user.id}")
+            return Response({
+                'message': 'Profile deleted successfully'
+            }, status=status.HTTP_200_OK)
+            
+        except ProfessionalProfile.DoesNotExist:
+            return Response(
+                {'error': 'Profile not found'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
 class JobCreateView(APIView):
     permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]  # NEW: Support file uploads
 
     def post(self, request):
         if request.user.role != 'client':
@@ -1152,14 +1242,35 @@ class JobCreateView(APIView):
                 status=status.HTTP_403_FORBIDDEN
             )
 
-        serializer = JobSerializer(data=request.data)
-        if serializer.is_valid():
-            serializer.save(client_id=request.user)  # Associate job with authenticated user
+        try:
+            # Log the incoming data for debugging
+            logger.info(f"Received job creation request from user {request.user.id}")
+            logger.info(f"Files in request: {request.FILES}")
+            logger.info(f"Data in request: {request.data}")
+
+            serializer = JobSerializer(data=request.data, context={'request': request})
+            if serializer.is_valid():
+                job = serializer.save(client_id=request.user)
+                
+                # Log successful creation
+                logger.info(f"Job created successfully with ID: {job.job_id}")
+                if job.document:
+                    logger.info(f"Document uploaded: {job.document.url}")
+                
+                return Response(
+                    serializer.data,
+                    status=status.HTTP_201_CREATED
+                )
+            else:
+                logger.error(f"Job creation failed with errors: {serializer.errors}")
+                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+                
+        except Exception as e:
+            logger.error(f"Unexpected error in job creation: {str(e)}")
             return Response(
-                serializer.data,
-                status=status.HTTP_201_CREATED
+                {'error': 'An unexpected error occurred while creating the job'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 class OpenJobsListView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -1253,8 +1364,13 @@ class ApplyToJobView(generics.CreateAPIView):
         except Exception as e:
             print(f"Failed to send WebSocket notification: {str(e)}")
 
+# Update your JobDetailView in views.py to support file uploads for editing
+
+from rest_framework.parsers import MultiPartParser, FormParser
+
 class JobDetailView(APIView):
     permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]  # Add parsers for file upload
 
     def get(self, request, job_id):
         """Get job details"""
@@ -1293,16 +1409,46 @@ class JobDetailView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Validate and update the job
-        serializer = JobSerializer(job, data=request.data, partial=True, context={'request': request})
-        if serializer.is_valid():
-            serializer.save()
-            return Response({
-                'message': 'Project updated successfully',
-                'job': serializer.data
-            }, status=status.HTTP_200_OK)
-        
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            # Log the incoming data for debugging
+            logger.info(f"Received job edit request from user {request.user.id} for job {job_id}")
+            logger.info(f"Files in request: {request.FILES}")
+            logger.info(f"Data in request: {request.data}")
+
+            # Handle file removal - if attachment is explicitly set to null/empty
+            if 'document' in request.data and (request.data['document'] == 'null' or request.data['document'] == ''):
+                # Create a copy of request data and remove the document
+                mutable_data = request.data.copy()
+                mutable_data['document'] = None
+                serializer = JobSerializer(job, data=mutable_data, partial=True, context={'request': request})
+            else:
+                # Validate and update the job normally
+                serializer = JobSerializer(job, data=request.data, partial=True, context={'request': request})
+            
+            if serializer.is_valid():
+                updated_job = serializer.save()
+                
+                # Log successful update
+                logger.info(f"Job {job_id} updated successfully")
+                if updated_job.document:
+                    logger.info(f"Document uploaded/updated: {updated_job.document.url}")
+                else:
+                    logger.info("No document attached or document was removed")
+                
+                return Response({
+                    'message': 'Project updated successfully',
+                    'job': serializer.data
+                }, status=status.HTTP_200_OK)
+            else:
+                logger.error(f"Job update failed with errors: {serializer.errors}")
+                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+                
+        except Exception as e:
+            logger.error(f"Unexpected error in job update: {str(e)}")
+            return Response(
+                {'error': 'An unexpected error occurred while updating the job'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
     def delete(self, request, job_id):
         """Delete job - only allowed if no applicants"""
@@ -1332,7 +1478,7 @@ class JobDetailView(APIView):
         # Store job title for response message
         job_title = job.title
         
-        # Delete the job
+        # Delete the job (this will also delete the Cloudinary file via the signal)
         job.delete()
         
         return Response({
@@ -1448,104 +1594,190 @@ class AcceptJobApplicationView(APIView):
         except Exception as e:
             return Response({'error': f'Payment initiation failed: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 # accounts/views.py
-class AdminVerifyProfessionalView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request, professional_id):
-        if not request.user.is_staff:
-            return Response({'error': 'Only admins can verify professionals'}, status=status.HTTP_403_FORBIDDEN)
-        
-        try:
-            profile = ProfessionalProfile.objects.get(user__id=professional_id)
-            return Response({
-                'professional_name': profile.user.name,
-                'verify_doc_url': profile.verify_doc.url if profile.verify_doc else None,
-                'verify_status': profile.verify_status
-            }, status=status.HTTP_200_OK)
-        except ProfessionalProfile.DoesNotExist:
-            return Response({'error': 'Profile not found'}, status=status.HTTP_404_NOT_FOUND)
-
-    def post(self, request, professional_id):
-        if not request.user.is_staff:
-            return Response({'error': 'Only admins can verify professionals'}, status=status.HTTP_403_FORBIDDEN)
-        
-        try:
-            profile = ProfessionalProfile.objects.get(user__id=professional_id)
-            action = request.data.get('action')  # 'verify' or 'deny'
-            
-            if action == 'verify':
-                profile.verify_status = 'Verified'
-                profile.denial_reason = None  # Clear any previous denial reason
-            elif action == 'deny':
-                profile.verify_status = 'Not Verified'
-                profile.denial_reason = request.data.get('denial_reason', 'No reason provided')
-            else:
-                return Response({'error': 'Invalid action'}, status=status.HTTP_400_BAD_REQUEST)
-            
-            profile.save()
-            
-            # Notify professional with appropriate message
-            message = f"Your verification request has been {action}ed by the admin."
-            if action == 'deny' and profile.denial_reason:
-                message += f"\nReason: {profile.denial_reason}"
-            
-            send_mail(
-                subject="Verification Status Update",
-                message=message,
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[profile.user.email],
-            )
-            return Response({'message': f'Professional {action}ed successfully'}, status=status.HTTP_200_OK)
-        except ProfessionalProfile.DoesNotExist:
-            return Response({'error': 'Profile not found'}, status=status.HTTP_404_NOT_FOUND)
 class AdminVerificationRequestsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        if not request.user.is_superuser:
-            return Response({'error': 'Only admins can view verification requests'}, status=status.HTTP_403_FORBIDDEN)
-        
-        pending_profiles = ProfessionalProfile.objects.filter(~Q(verify_status='Verified')).select_related('user')
-        serializer = ProfessionalProfileSerializer(pending_profiles, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
-
-    def post(self, request):
-        if not request.user.is_superuser:
-            return Response({'error': 'Only admins can verify professionals'}, status=status.HTTP_403_FORBIDDEN)
-        
-        professional_id = request.data.get('professional_id')
-        action = request.data.get('action')  # 'verify' or 'deny'
+        """Get all verification requests for admin review"""
+        # Check if user is admin (using is_staff or role)
+        if not (request.user.is_staff or getattr(request.user, 'role', None) == 'admin'):
+            return Response(
+                {'error': 'Only admin can view verification requests'}, 
+                status=status.HTTP_403_FORBIDDEN
+            )
         
         try:
-            profile = ProfessionalProfile.objects.get(user__id=professional_id)
-            if profile.verify_status != 'Pending':
-                return Response({'error': 'This profile is not pending verification'}, status=status.HTTP_400_BAD_REQUEST)
+            # Get profiles that need verification (Pending) or have been denied (Not Verified)
+            profiles = ProfessionalProfile.objects.filter(
+                Q(verify_status='Pending') | Q(verify_status='Not Verified')
+            ).select_related('user').order_by('-user__date_joined')
+            
+            logger.info(f"Found {profiles.count()} profiles for verification review")
+            
+            # Use the admin-specific serializer with Cloudinary support
+            serializer = AdminVerificationSerializer(profiles, many=True)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            logger.error(f"Error fetching verification requests: {str(e)}")
+            return Response(
+                {'error': 'Failed to fetch verification requests'}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+class AdminVerifyProfessionalView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, professional_id):
+        """Get specific professional verification details"""
+        if not (request.user.is_staff or getattr(request.user, 'role', None) == 'admin'):
+            return Response(
+                {'error': 'Only admins can view professional details'}, 
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        try:
+            # Get the professional user and profile
+            professional_user = CustomUser.objects.get(id=professional_id, role='professional')
+            profile = ProfessionalProfile.objects.get(user=professional_user)
+            
+            # Use the admin serializer to get all details including Cloudinary URLs
+            serializer = AdminVerificationSerializer(profile)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+            
+        except CustomUser.DoesNotExist:
+            return Response(
+                {'error': 'Professional not found'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except ProfessionalProfile.DoesNotExist:
+            return Response(
+                {'error': 'Professional profile not found'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            logger.error(f"Error fetching professional details: {str(e)}")
+            return Response(
+                {'error': 'Failed to fetch professional details'}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    def post(self, request, professional_id):
+        """Verify or deny a professional"""
+        if not (request.user.is_staff or getattr(request.user, 'role', None) == 'admin'):
+            return Response(
+                {'error': 'Only admins can verify professionals'}, 
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        try:
+            # Get the professional user and profile
+            try:
+                professional_user = CustomUser.objects.get(id=professional_id, role='professional')
+                profile = ProfessionalProfile.objects.get(user=professional_user)
+            except CustomUser.DoesNotExist:
+                return Response(
+                    {'error': 'Professional not found'}, 
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            except ProfessionalProfile.DoesNotExist:
+                return Response(
+                    {'error': 'Professional profile not found'}, 
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            
+            action = request.data.get('action')
             
             if action == 'verify':
+                # Check if verification document exists in Cloudinary
+                if not profile.verify_doc:
+                    return Response(
+                        {'error': 'Cannot verify professional without verification document'}, 
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                
+                # Test if document is accessible
+                try:
+                    document_url = profile.verify_doc.url
+                    if not document_url:
+                        raise Exception("Document URL is empty")
+                    logger.info(f"Document verified at: {document_url}")
+                except Exception as e:
+                    logger.error(f"Document accessibility check failed: {str(e)}")
+                    return Response(
+                        {'error': 'Verification document is not accessible. Please ask the professional to re-upload.'}, 
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                
+                # Verify the professional
                 profile.verify_status = 'Verified'
                 profile.denial_reason = None  # Clear any previous denial reason
+                profile.save()
+                
+                logger.info(f"Professional {professional_user.email} verified by admin {request.user.email}")
+                
+                # Send notification email (optional)
+                try:
+                    send_mail(
+                        subject="Verification Status Update - Approved! 🎉",
+                        message=f"Dear {professional_user.name},\n\nGreat news! Your professional verification has been approved by our admin team.\n\nYou now have access to all professional features on our platform.\n\nBest regards,\nThe Team",
+                        from_email=settings.DEFAULT_FROM_EMAIL,
+                        recipient_list=[professional_user.email],
+                        fail_silently=True,
+                    )
+                    logger.info(f"Verification approval email sent to {professional_user.email}")
+                except Exception as e:
+                    logger.warning(f"Failed to send verification email: {str(e)}")
+                
+                return Response({
+                    'message': f'Professional {professional_user.name} has been verified successfully'
+                }, status=status.HTTP_200_OK)
+                
             elif action == 'deny':
+                denial_reason = request.data.get('denial_reason', '').strip()
+                
+                if not denial_reason:
+                    return Response(
+                        {'error': 'Denial reason is required when denying verification'}, 
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                
+                # Deny the professional
                 profile.verify_status = 'Not Verified'
-                profile.denial_reason = request.data.get('denial_reason', 'No reason provided')
+                profile.denial_reason = denial_reason
+                profile.save()
+                
+                logger.info(f"Professional {professional_user.email} denied by admin {request.user.email}. Reason: {denial_reason}")
+                
+                # Send notification email (optional)
+                try:
+                    send_mail(
+                        subject="Verification Status Update",
+                        message=f"Dear {professional_user.name},\n\nYour verification request has been reviewed.\n\nStatus: Not Verified\nReason: {denial_reason}\n\nPlease review the feedback and submit a new verification request with the required corrections.\n\nBest regards,\nThe Team",
+                        from_email=settings.DEFAULT_FROM_EMAIL,
+                        recipient_list=[professional_user.email],
+                        fail_silently=True,
+                    )
+                    logger.info(f"Verification denial email sent to {professional_user.email}")
+                except Exception as e:
+                    logger.warning(f"Failed to send denial email: {str(e)}")
+                
+                return Response({
+                    'message': f'Professional {professional_user.name} verification has been denied'
+                }, status=status.HTTP_200_OK)
+            
             else:
-                return Response({'error': 'Invalid action'}, status=status.HTTP_400_BAD_REQUEST)
-            
-            profile.save()
-            
-            # Notify professional with appropriate message
-            message = f"Your verification request has been {action}ed by the admin."
-            if action == 'deny' and profile.denial_reason:
-                message += f"\nReason: {profile.denial_reason}"
-            
-            send_mail(
-                subject="Verification Status Update",
-                message=message,
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[profile.user.email],
+                return Response(
+                    {'error': 'Invalid action. Use "verify" or "deny"'}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+                
+        except Exception as e:
+            logger.error(f"Error processing verification request: {str(e)}")
+            return Response(
+                {'error': 'An unexpected error occurred while processing the request'}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-            return Response({'message': f'Professional {action}ed successfully'}, status=status.HTTP_200_OK)
-        except ProfessionalProfile.DoesNotExist:
-            return Response({'error': 'Profile not found'}, status=status.HTTP_404_NOT_FOUND)
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
