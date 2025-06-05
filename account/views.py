@@ -8,7 +8,7 @@ from django.contrib.auth import authenticate
 from django.db.models import Q
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework_simplejwt.tokens import RefreshToken
-from .serializers import UserRegistrationSerializer, UserLoginSerializer, ForgotPasswordSerializer, ResetPasswordSerializer,ProfessionalProfileSerializer,AdminVerificationSerializer
+from .serializers import UserRegistrationSerializer, UserLoginSerializer, ForgotPasswordSerializer, ResetPasswordSerializer,ProfessionalProfileSerializer
 from .models import CustomUser,ProfessionalProfile,Job,JobApplication
 from .models import PaymentRequest, Payment
 from backend.utils import send_otp_email
@@ -29,7 +29,7 @@ from django.conf import settings
 import logging
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.permissions import AllowAny
-from .serializers import UserBlockSerializer,UserSerializer,JobSerializer,JobApplicationSerializer
+from .serializers import UserSerializer,JobSerializer,JobApplicationSerializer
 from django.core.mail import send_mail
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
@@ -43,7 +43,7 @@ from rest_framework import status, generics
 from rest_framework.permissions import IsAuthenticated, IsAdminUser
 from django.shortcuts import get_object_or_404
 from .models import Complaint
-from .serializers import ComplaintSerializer
+
 from django.db.models import Q
 from .models import Conversation, Message
 from .serializers import ConversationSerializer, MessageSerializer
@@ -162,42 +162,7 @@ class MarkAllNotificationsReadView(APIView):
     def post(self, request):
         Notification.objects.filter(user=request.user, is_read=False).update(is_read=True)
         return Response({"success": True}, status=status.HTTP_200_OK)
-class UserCountsView(APIView):
-    permission_classes = [IsAdminUser]
-    def get(self, request):
-        professional_count = CustomUser.objects.filter(role='professional').count()
-        client_count = CustomUser.objects.filter(role='client').count()
-        pending_complaints = Complaint.objects.filter(status='Pending').count()
-        verified_professionals = CustomUser.objects.filter(
-            role='professional', 
-            professionalprofile__verify_status='Verified'
-        ).count()
-        return Response({
-            'professionals': professional_count,
-            'clients': client_count,
-            'pending_complaints': pending_complaints,
-            'verified_professionals': verified_professionals
-        }, status=status.HTTP_200_OK)
 
-class JobCountsView(APIView):
-    permission_classes = [IsAdminUser]
-    def get(self, request):
-        total_jobs = Job.objects.count()
-        completed_jobs = Job.objects.filter(status='Completed').count()
-        active_applications = JobApplication.objects.filter(
-            status__in=['Pending', 'Accepted']
-        ).count()
-        # Active conversations: Conversations with messages in the last 30 days
-        recent_threshold = datetime.now() - timedelta(days=30)
-        active_conversations = Conversation.objects.filter(
-            messages__created_at__gte=recent_threshold
-        ).distinct().count()
-        return Response({
-            'total_jobs': total_jobs,
-            'completed_jobs': completed_jobs,
-            'active_applications': active_applications,
-            'active_conversations': active_conversations
-        }, status=status.HTTP_200_OK)
 
 class PaymentTotalView(APIView):
     permission_classes = [IsAdminUser]
@@ -517,237 +482,7 @@ class CheckJobStatesView(APIView):
             'job_states': job_states,
             'user_role': user.role
         }, status=status.HTTP_200_OK)
-class ComplaintListCreateView(generics.ListCreateAPIView):
-    """
-    View for creating complaints and listing user's own complaints
-    """
-    serializer_class = ComplaintSerializer
-    permission_classes = [IsAuthenticated]
-    
-    def get_queryset(self):
-        # Regular users can only see their own complaints
-        user = self.request.user
-        if user.is_superuser or user.is_staff:
-            return Complaint.objects.all().order_by('-created_at')
-        return Complaint.objects.filter(user=user).order_by('-created_at')
-    
-    def perform_create(self, serializer):
-        serializer.save(user=self.request.user)
 
-class ComplaintDetailView(generics.RetrieveUpdateAPIView):
-    """
-    View for retrieving and updating a specific complaint
-    """
-    serializer_class = ComplaintSerializer
-    permission_classes = [IsAuthenticated]
-    
-    def get_queryset(self):
-        user = self.request.user
-        if user.is_superuser or user.is_staff:
-            return Complaint.objects.all()
-        return Complaint.objects.filter(user=user)
-    
-    def patch(self, request, *args, **kwargs):
-        user = request.user
-        complaint = self.get_object()
-        
-        # Only allow clients to mark as resolved if status is AWAITING_USER_RESPONSE
-        if 'status' in request.data:
-            new_status = request.data['status']
-            if new_status == 'RESOLVED' and complaint.status == 'AWAITING_USER_RESPONSE':
-                # Client is marking as resolved - allow this
-                pass
-            elif user.is_superuser or user.is_staff:
-                # Admin can update any status
-                pass
-            else:
-                return Response(
-                    {'error': 'You can only mark complaints as resolved when awaiting your response'},
-                    status=status.HTTP_403_FORBIDDEN
-                )
-            
-        return super().patch(request, *args, **kwargs)
-class ComplaintFeedbackView(APIView):
-    """
-    View for submitting client feedback on admin responses
-    """
-    permission_classes = [IsAuthenticated]
-    
-    def patch(self, request, pk):
-        try:
-            complaint = Complaint.objects.get(id=pk, user=request.user)
-        except Complaint.DoesNotExist:
-            return Response(
-                {'error': 'Complaint not found'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        
-        # Validate that complaint can receive feedback
-        if complaint.status != 'AWAITING_USER_RESPONSE':
-            return Response(
-                {'error': 'Cannot provide feedback for this complaint status'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        client_feedback = request.data.get('client_feedback', '').strip()
-        resolution_rating = request.data.get('resolution_rating')
-        
-        if not client_feedback:
-            return Response(
-                {'error': 'Feedback text is required'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        # Validate rating if provided
-        if resolution_rating is not None:
-            try:
-                resolution_rating = int(resolution_rating)
-                if resolution_rating < 1 or resolution_rating > 5:
-                    raise ValueError
-            except (ValueError, TypeError):
-                return Response(
-                    {'error': 'Rating must be between 1 and 5'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-        
-        # Update complaint with feedback
-        complaint.client_feedback = client_feedback
-        complaint.resolution_rating = resolution_rating
-        complaint.feedback_date = timezone.now()
-        complaint.status = 'NEEDS_FURTHER_ACTION'
-        complaint.save()
-        
-        # Notify admin about the feedback
-        try:
-            # Create notification for admin staff
-            admin_users = CustomUser.objects.filter(is_staff=True)
-            for admin in admin_users:
-                Notification.objects.create(
-                    user=admin,
-                    notification_type='complaint',
-                    title=f'Complaint #{complaint.id} needs further action',
-                    message=f'User {complaint.user.email} provided feedback on complaint response and needs further assistance.',
-                    data={
-                        'complaint_id': complaint.id,
-                        'user_email': complaint.user.email,
-                        'rating': resolution_rating,
-                        'action_required': 'review_feedback'
-                    }
-                )
-            
-            
-        except Exception as e:
-            print(f"Error sending feedback notification: {str(e)}")
-        
-        serializer = ComplaintSerializer(complaint, context={'request': request})
-        return Response(serializer.data, status=status.HTTP_200_OK)
-class AdminComplaintListView(generics.ListAPIView):
-    """
-    Admin view for listing all complaints with filtering options
-    """
-    serializer_class = ComplaintSerializer
-    permission_classes = [IsAuthenticated]
-    
-    def get_permissions(self):
-        if not (self.request.user.is_staff or self.request.user.is_superuser):
-            return [IsAdminUser()]
-        return super().get_permissions()
-    
-    def get_queryset(self):
-        queryset = Complaint.objects.all().order_by('-created_at')
-        
-        # Filter by status if provided
-        status_filter = self.request.query_params.get('status', None)
-        if status_filter:
-            queryset = queryset.filter(status=status_filter)
-            
-        # Search by description or user email
-        search = self.request.query_params.get('search', None)
-        if search:
-            queryset = queryset.filter(
-                Q(description__icontains=search) | 
-                Q(user__email__icontains=search) |
-                Q(id__icontains=search)
-            )
-            
-        return queryset
-class AdminComplaintResponseView(APIView):
-    """
-    Admin view for responding to complaints
-    """
-    permission_classes = [IsAuthenticated]
-    
-    def patch(self, request, pk):
-        if not (request.user.is_staff or request.user.is_superuser):
-            return Response(
-                {'error': 'Only admin users can respond to complaints'},
-                status=status.HTTP_403_FORBIDDEN
-            )
-        
-        try:
-            complaint = Complaint.objects.get(id=pk)
-        except Complaint.DoesNotExist:
-            return Response(
-                {'error': 'Complaint not found'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        
-        admin_response = request.data.get('admin_response', '').strip()
-        if not admin_response:
-            return Response(
-                {'error': 'Response text is required'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        # Update complaint with admin response
-        complaint.admin_response = admin_response
-        complaint.responded_by = request.user
-        complaint.response_date = timezone.now()
-        complaint.status = 'AWAITING_USER_RESPONSE'
-        complaint.save()
-        
-        # Create notification for the user
-        try:
-            Notification.objects.create(
-                user=complaint.user,
-                notification_type='complaint',
-                title=f'Response to your complaint #{complaint.id}',
-                message=f'An admin has responded to your complaint. Please review the response and let us know if it resolves your issue.',
-                data={
-                    'complaint_id': complaint.id,
-                    'response_preview': admin_response[:100] + '...' if len(admin_response) > 100 else admin_response,
-                    'action_required': 'review_response'
-                }
-            )
-            
-            # Send email notification to user
-            send_mail(
-                subject=f'Response to Your Complaint #{complaint.id}',
-                message=f"""
-                Dear {complaint.user.name},
-                
-                We have reviewed your complaint and provided a response.
-                
-                Original Issue: {complaint.description[:200]}...
-                
-                Our Response: {admin_response}
-                
-                Please log in to your account to review the full response and let us know if this resolves your issue or if you need further assistance.
-                
-                Thank you for your patience.
-                
-                Best regards,
-                Customer Support Team
-                """,
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[complaint.user.email],
-                fail_silently=True
-            )
-        except Exception as e:
-            print(f"Error sending response notification: {str(e)}")
-        
-        serializer = ComplaintSerializer(complaint, context={'request': request})
-        return Response(serializer.data, status=status.HTTP_200_OK)
 class ClientPendingPaymentsView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -839,30 +574,6 @@ class ClientProjectsView(APIView):
             'active': active_serializer.data,
             'completed': completed_serializer.data
         }, status=status.HTTP_200_OK)
-class ListUsersView(APIView):
-    permission_classes = [AllowAny]
-
-    def get(self, request):
-        # Fetch all users except superusers
-        users = CustomUser.objects.filter(is_superuser=False).order_by('email')
-        serializer = UserSerializer(users, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
-class BlockUnblockUserView(APIView):
-    permission_classes = [AllowAny]
-
-    def patch(self, request, user_id):
-        try:
-            user = CustomUser.objects.get(id=user_id)
-        except CustomUser.DoesNotExist:
-            return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
-
-        serializer = UserBlockSerializer(user, data=request.data, partial=True)
-        if serializer.is_valid():
-            serializer.save()
-            action = 'blocked' if user.is_blocked else 'unblocked'
-            return Response({'message': f'User has been {action} successfully.'}, status=status.HTTP_200_OK)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
 
 class CheckAuthView(APIView):
     permission_classes = [AllowAny]
@@ -1597,190 +1308,7 @@ class AcceptJobApplicationView(APIView):
         except Exception as e:
             return Response({'error': f'Payment initiation failed: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 # accounts/views.py
-class AdminVerificationRequestsView(APIView):
-    permission_classes = [IsAuthenticated]
 
-    def get(self, request):
-        """Get all verification requests for admin review"""
-        # Check if user is admin (using is_staff or role)
-        if not (request.user.is_staff or getattr(request.user, 'role', None) == 'admin'):
-            return Response(
-                {'error': 'Only admin can view verification requests'}, 
-                status=status.HTTP_403_FORBIDDEN
-            )
-        
-        try:
-            # Get profiles that need verification (Pending) or have been denied (Not Verified)
-            profiles = ProfessionalProfile.objects.filter(
-                Q(verify_status='Pending') | Q(verify_status='Not Verified')
-            ).select_related('user').order_by('-user__date_joined')
-            
-            logger.info(f"Found {profiles.count()} profiles for verification review")
-            
-            # Use the admin-specific serializer with Cloudinary support
-            serializer = AdminVerificationSerializer(profiles, many=True)
-            return Response(serializer.data, status=status.HTTP_200_OK)
-            
-        except Exception as e:
-            logger.error(f"Error fetching verification requests: {str(e)}")
-            return Response(
-                {'error': 'Failed to fetch verification requests'}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
-
-class AdminVerifyProfessionalView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request, professional_id):
-        """Get specific professional verification details"""
-        if not (request.user.is_staff or getattr(request.user, 'role', None) == 'admin'):
-            return Response(
-                {'error': 'Only admins can view professional details'}, 
-                status=status.HTTP_403_FORBIDDEN
-            )
-        
-        try:
-            # Get the professional user and profile
-            professional_user = CustomUser.objects.get(id=professional_id, role='professional')
-            profile = ProfessionalProfile.objects.get(user=professional_user)
-            
-            # Use the admin serializer to get all details including Cloudinary URLs
-            serializer = AdminVerificationSerializer(profile)
-            return Response(serializer.data, status=status.HTTP_200_OK)
-            
-        except CustomUser.DoesNotExist:
-            return Response(
-                {'error': 'Professional not found'}, 
-                status=status.HTTP_404_NOT_FOUND
-            )
-        except ProfessionalProfile.DoesNotExist:
-            return Response(
-                {'error': 'Professional profile not found'}, 
-                status=status.HTTP_404_NOT_FOUND
-            )
-        except Exception as e:
-            logger.error(f"Error fetching professional details: {str(e)}")
-            return Response(
-                {'error': 'Failed to fetch professional details'}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
-
-    def post(self, request, professional_id):
-        """Verify or deny a professional"""
-        if not (request.user.is_staff or getattr(request.user, 'role', None) == 'admin'):
-            return Response(
-                {'error': 'Only admins can verify professionals'}, 
-                status=status.HTTP_403_FORBIDDEN
-            )
-        
-        try:
-            # Get the professional user and profile
-            try:
-                professional_user = CustomUser.objects.get(id=professional_id, role='professional')
-                profile = ProfessionalProfile.objects.get(user=professional_user)
-            except CustomUser.DoesNotExist:
-                return Response(
-                    {'error': 'Professional not found'}, 
-                    status=status.HTTP_404_NOT_FOUND
-                )
-            except ProfessionalProfile.DoesNotExist:
-                return Response(
-                    {'error': 'Professional profile not found'}, 
-                    status=status.HTTP_404_NOT_FOUND
-                )
-            
-            action = request.data.get('action')
-            
-            if action == 'verify':
-                # Check if verification document exists in Cloudinary
-                if not profile.verify_doc:
-                    return Response(
-                        {'error': 'Cannot verify professional without verification document'}, 
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-                
-                # Test if document is accessible
-                try:
-                    document_url = profile.verify_doc.url
-                    if not document_url:
-                        raise Exception("Document URL is empty")
-                    logger.info(f"Document verified at: {document_url}")
-                except Exception as e:
-                    logger.error(f"Document accessibility check failed: {str(e)}")
-                    return Response(
-                        {'error': 'Verification document is not accessible. Please ask the professional to re-upload.'}, 
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-                
-                # Verify the professional
-                profile.verify_status = 'Verified'
-                profile.denial_reason = None  # Clear any previous denial reason
-                profile.save()
-                
-                logger.info(f"Professional {professional_user.email} verified by admin {request.user.email}")
-                
-                # Send notification email (optional)
-                try:
-                    send_mail(
-                        subject="Verification Status Update - Approved! 🎉",
-                        message=f"Dear {professional_user.name},\n\nGreat news! Your professional verification has been approved by our admin team.\n\nYou now have access to all professional features on our platform.\n\nBest regards,\nThe Team",
-                        from_email=settings.DEFAULT_FROM_EMAIL,
-                        recipient_list=[professional_user.email],
-                        fail_silently=True,
-                    )
-                    logger.info(f"Verification approval email sent to {professional_user.email}")
-                except Exception as e:
-                    logger.warning(f"Failed to send verification email: {str(e)}")
-                
-                return Response({
-                    'message': f'Professional {professional_user.name} has been verified successfully'
-                }, status=status.HTTP_200_OK)
-                
-            elif action == 'deny':
-                denial_reason = request.data.get('denial_reason', '').strip()
-                
-                if not denial_reason:
-                    return Response(
-                        {'error': 'Denial reason is required when denying verification'}, 
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-                
-                # Deny the professional
-                profile.verify_status = 'Not Verified'
-                profile.denial_reason = denial_reason
-                profile.save()
-                
-                logger.info(f"Professional {professional_user.email} denied by admin {request.user.email}. Reason: {denial_reason}")
-                
-                # Send notification email (optional)
-                try:
-                    send_mail(
-                        subject="Verification Status Update",
-                        message=f"Dear {professional_user.name},\n\nYour verification request has been reviewed.\n\nStatus: Not Verified\nReason: {denial_reason}\n\nPlease review the feedback and submit a new verification request with the required corrections.\n\nBest regards,\nThe Team",
-                        from_email=settings.DEFAULT_FROM_EMAIL,
-                        recipient_list=[professional_user.email],
-                        fail_silently=True,
-                    )
-                    logger.info(f"Verification denial email sent to {professional_user.email}")
-                except Exception as e:
-                    logger.warning(f"Failed to send denial email: {str(e)}")
-                
-                return Response({
-                    'message': f'Professional {professional_user.name} verification has been denied'
-                }, status=status.HTTP_200_OK)
-            
-            else:
-                return Response(
-                    {'error': 'Invalid action. Use "verify" or "deny"'}, 
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-                
-        except Exception as e:
-            logger.error(f"Error processing verification request: {str(e)}")
-            return Response(
-                {'error': 'An unexpected error occurred while processing the request'}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -2348,27 +1876,7 @@ class SubmitReviewView(APIView):
             pass
 
         return Response({'message': 'Rating and review submitted successfully'}, status=status.HTTP_200_OK)
-class AdminJobsView(APIView):
-    permission_classes = [AllowAny]
 
-    def get(self, request):
-       
-        # Categorize jobs by status
-         # Categorize jobs by status
-        pending_jobs = Job.objects.filter( status='Open')
-        active_jobs = Job.objects.filter( status='Assigned')
-        completed_jobs = Job.objects.filter(status='Completed')
-
-        # Serialize each category
-        pending_serializer = JobSerializer(pending_jobs, many=True)
-        active_serializer = JobSerializer(active_jobs, many=True)
-        completed_serializer = JobSerializer(completed_jobs, many=True)
-
-        return Response({
-            'pending': pending_serializer.data,
-            'active': active_serializer.data,
-            'completed': completed_serializer.data
-        }, status=status.HTTP_200_OK)
 class ClientTransactionHistoryView(APIView):
     permission_classes = [IsAuthenticated]
 

@@ -1,7 +1,7 @@
 from django.urls import path
-from .views import RegisterView, LoginView, LogoutView, VerifyOTPView, ForgotPasswordView, ResetPasswordView, AcceptJobApplicationView, JobDetailView, RequestVerificationView, AdminVerifyProfessionalView, ProfessionalJobApplicationsView, SubmitReviewView, AdminJobsView, ComplaintListCreateView, AdminComplaintListView, ConversationView, UnreadMessagesCountView, CreateMissingConversationsView, FileUploadView,FileRecoveryView
-from .views import CheckAuthView, BlockUnblockUserView, ListUsersView, ProfessionalProfileView, JobCreateView, OpenJobsListView, ApplyToJobView, ClientProjectsView, JobApplicationsListView, AdminVerificationRequestsView, VerifyPaymentView, ClientPendingPaymentsView, ClientTransactionHistoryView, ComplaintDetailView, ProfessionalTransactionHistoryView, UserConversationsView, CheckJobStatesView, WebSocketAuthTokenView
-from .views import UserCountsView, JobCountsView,PaymentTotalView,ResendOTPView,TokenRefreshView,ComplaintFeedbackView, AdminComplaintResponseView
+from .views import RegisterView, LoginView, LogoutView, VerifyOTPView, ForgotPasswordView, ResetPasswordView, AcceptJobApplicationView, JobDetailView, RequestVerificationView, ProfessionalJobApplicationsView, SubmitReviewView,  ConversationView, UnreadMessagesCountView, CreateMissingConversationsView, FileUploadView,FileRecoveryView
+from .views import CheckAuthView,  ProfessionalProfileView, JobCreateView, OpenJobsListView, ApplyToJobView, ClientProjectsView, JobApplicationsListView,  VerifyPaymentView, ClientPendingPaymentsView, ClientTransactionHistoryView,  ProfessionalTransactionHistoryView, UserConversationsView, CheckJobStatesView, WebSocketAuthTokenView
+from .views import PaymentTotalView,ResendOTPView,TokenRefreshView
 from account.views import (
     NotificationListView,
     NotificationCountView,
@@ -19,8 +19,6 @@ urlpatterns = [
     path('forgot-password/', ForgotPasswordView.as_view(), name='forgot-password'),
     path('reset-password/', ResetPasswordView.as_view(), name='reset-password'),
     path('check-auth/', CheckAuthView.as_view(), name='check-auth'),
-    path('users/<int:user_id>/block-unblock/', BlockUnblockUserView.as_view(), name='block-unblock-user'),
-    path('users/', ListUsersView.as_view(), name='list-users'),
     path('profile/', ProfessionalProfileView.as_view(), name='professional-profile'),
     path('jobs/', JobCreateView.as_view(), name='job-create'),
     path('open-jobs/', OpenJobsListView.as_view(), name='open-jobs-list'),
@@ -30,22 +28,11 @@ urlpatterns = [
     path('accept-application/<int:application_id>/', AcceptJobApplicationView.as_view(), name='accept_application'),
     path('jobs/<int:job_id>/', JobDetailView.as_view(), name='job_detail'),
     path('request-verification/', RequestVerificationView.as_view(), name='request_verification'),
-    path('admin/verify-professional/<int:professional_id>/', AdminVerifyProfessionalView.as_view(), name='admin_verify_professional'),
-    path('admin/verification-requests/', AdminVerificationRequestsView.as_view(), name='admin_verification_requests'),
     path('professional-job-applications/', ProfessionalJobApplicationsView.as_view(), name='professional-job-applications'),
     path('verify-payment/', VerifyPaymentView.as_view(), name='verify-payment'),
     path('client-pending-payments/', ClientPendingPaymentsView.as_view(), name='client_pending_payments'),
     path('submit-review/', SubmitReviewView.as_view(), name='submit-review'),
-    path('admin/jobs/', AdminJobsView.as_view(), name='admin-jobs'),
     path('client/transactions/', ClientTransactionHistoryView.as_view(), name='client-transactions'),
-    path('complaints/', ComplaintListCreateView.as_view(), name='complaint-list-create'),
-    path('complaints/<int:pk>/', ComplaintDetailView.as_view(), name='complaint-detail'),
-    path('complaints/<int:pk>/feedback/', ComplaintFeedbackView.as_view(), name='complaint-feedback'),  # MISSING URL
-    
-    # Admin complaint endpoints
-    path('admin/complaints/', AdminComplaintListView.as_view(), name='admin-complaint-list'),
-    path('admin/complaints/<int:pk>/respond/', AdminComplaintResponseView.as_view(), name='admin-complaint-response'),  # MISSING URL
-
     path('professional/transactions/', ProfessionalTransactionHistoryView.as_view(), name='professional-transactions'),
     path('conversations/', UserConversationsView.as_view(), name='user_conversations'),
     path('conversations/job/<int:job_id>/', ConversationView.as_view(), name='conversation'),
@@ -55,11 +42,9 @@ urlpatterns = [
     path('ws-auth-token/', WebSocketAuthTokenView.as_view(), name='ws-auth-token'),
     path('conversations/job/<int:job_id>/file/', FileUploadView.as_view(), name='file-upload'),
     path('conversations/file-recovery/', FileRecoveryView.as_view(), name='file-recovery'),
-   path('users/counts/', UserCountsView.as_view(), name='user-counts'),
-    path('jobs/counts/', JobCountsView.as_view(), name='job-counts'),
     path('payments/total/', PaymentTotalView.as_view(), name='payment-total'),
-      path('resend-otp/', ResendOTPView.as_view(), name='resend-otp'),
-        path('notifications/', NotificationListView.as_view(), name='notification-list'),
+    path('resend-otp/', ResendOTPView.as_view(), name='resend-otp'),
+    path('notifications/', NotificationListView.as_view(), name='notification-list'),
     path('notifications/count/', NotificationCountView.as_view(), name='notification-count'),
     path('notifications/mark-read/', MarkNotificationReadView.as_view(), name='mark-notification-read'),
     path('notifications/mark-all-read/', MarkAllNotificationsReadView.as_view(), name='mark-all-notifications-read'),

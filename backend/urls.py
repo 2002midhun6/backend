@@ -25,6 +25,8 @@ import os
 urlpatterns = [
     path("admin/", admin.site.urls),
     path('api/', include('account.urls')),
+    path('api/', include('Complaint_app.urls')),
+     path('api/', include('admin_app.urls')),
    path('health/', health_check, name='health_check'),
 ]
 if settings.DEBUG:

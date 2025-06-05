@@ -38,6 +38,7 @@ INSTALLED_APPS = [
     'channels',
     'cloudinary_storage',
     'cloudinary',
+    'Complaint_app',
 ]
 
 MIDDLEWARE = [

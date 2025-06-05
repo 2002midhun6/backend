@@ -57,60 +57,6 @@ class ConversationSerializer(serializers.ModelSerializer):
         model = Conversation
         fields = ['id', 'job', 'job_title', 'client_id', 'professional_id', 'messages', 'created_at']
 
-class ComplaintSerializer(serializers.ModelSerializer):
-    user_email = serializers.SerializerMethodField()
-    user_role = serializers.SerializerMethodField()
-    status_display = serializers.SerializerMethodField()
-    can_mark_resolved = serializers.SerializerMethodField()
-    responded_by_name = serializers.SerializerMethodField()
-    
-    class Meta:
-        model = Complaint
-        fields = [
-            'id', 
-            'user', 
-            'user_email',
-            'user_role',
-            'description', 
-            'status', 
-            'status_display',
-            'created_at', 
-            'updated_at',
-            'admin_response',
-            'responded_by',
-            'responded_by_name',
-            'response_date',
-            'client_feedback',
-            'resolution_rating',
-            'feedback_date',
-            'can_mark_resolved'
-        ]
-        read_only_fields = [
-            'id', 'user', 'user_email', 'user_role', 'created_at', 
-            'updated_at', 'status_display', 'can_mark_resolved',
-            'responded_by_name', 'response_date', 'feedback_date'
-        ]
-    
-    def get_user_email(self, obj):
-        return obj.user.email if obj.user else None
-    
-    def get_user_role(self, obj):
-        return obj.user.role if obj.user else None
-    
-    def get_status_display(self, obj):
-        return obj.get_status_display()
-    
-    def get_can_mark_resolved(self, obj):
-        return obj.can_mark_resolved
-    
-    def get_responded_by_name(self, obj):
-        return obj.responded_by_name
-    
-    def create(self, validated_data):
-        # Associate complaint with the current user
-        user = self.context['request'].user
-        validated_data['user'] = user
-        return super().create(validated_data)
 
 
 class PaymentSerializer(serializers.ModelSerializer):
@@ -252,10 +198,6 @@ class ResetPasswordSerializer(serializers.Serializer):
         user.save()
         return user
 
-class UserBlockSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = CustomUser
-        fields = ['is_blocked']
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = CustomUser
@@ -577,61 +519,3 @@ class JobApplicationSerializer(serializers.ModelSerializer):
         return data
 # Add this to your serializers.py - Admin-specific serializer for verification
 
-class AdminVerificationSerializer(serializers.ModelSerializer):
-    user = UserSerializer(read_only=True)
-    verify_doc_url = serializers.SerializerMethodField()
-    verify_doc_filename = serializers.SerializerMethodField()
-    
-    class Meta:
-        model = ProfessionalProfile
-        fields = [
-            'bio',
-            'skills',
-            'experience_years',
-            'availability_status',
-            'portfolio_links',
-            'verify_status',
-            'avg_rating',
-            'user',
-            'verify_doc',
-            'verify_doc_url',
-            'verify_doc_filename',
-            'denial_reason',
-        ]
-        read_only_fields = ['verify_doc_url', 'verify_doc_filename']
-
-    def get_verify_doc_url(self, obj):
-        """Return the full URL of the verification document if it exists"""
-        try:
-            if hasattr(obj, 'verify_doc') and obj.verify_doc:
-                return obj.verify_doc.url
-            return None
-        except Exception as e:
-            logger.error(f"Error getting document URL for user {obj.user.id}: {e}")
-            return None
-
-    def get_verify_doc_filename(self, obj):
-        """Extract filename from Cloudinary URL"""
-        try:
-            if hasattr(obj, 'verify_doc') and obj.verify_doc:
-                # Get the URL
-                url = obj.verify_doc.url
-                if url:
-                    # Extract filename from Cloudinary URL
-                    if 'cloudinary.com' in url:
-                        # Cloudinary URLs typically end with the filename
-                        parts = url.split('/')
-                        # Get the last part which should be the filename
-                        filename_with_extension = parts[-1]
-                        # Remove any query parameters
-                        filename = filename_with_extension.split('?')[0]
-                        # Decode URL encoding
-                        decoded_filename = urllib.parse.unquote(filename)
-                        return decoded_filename if decoded_filename else 'verification_document'
-                    else:
-                        # Fallback for other URLs
-                        return url.split('/')[-1].split('?')[0]
-            return 'verification_document'
-        except Exception as e:
-            logger.error(f"Error extracting filename for user {obj.user.id}: {e}")
-            return 'verification_document'
