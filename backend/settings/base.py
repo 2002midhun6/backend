@@ -1,5 +1,3 @@
-# settings.py - CRITICAL FIXES for Cloud Run
-
 from pathlib import Path
 import os
 from datetime import timedelta
@@ -8,20 +6,10 @@ import cloudinary.uploader
 import cloudinary.api
 from dotenv import load_dotenv
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = Path(__file__).resolve().parent.parent.parent  # Adjusted for settings dir
 load_dotenv(os.path.join(BASE_DIR, '.env'))
 
 SECRET_KEY = os.getenv('SECRET_KEY')
-DEBUG = True  # MUST be False in production
-ALLOWED_HOSTS = [
-    'jobseeker-69742084525.us-central1.run.app', 
-    '*.run.app', 
-    'localhost', 
-    '127.0.0.1',
-    'midhung.in',
-    'www.midhung.in'
-]
-
 INSTALLED_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',
@@ -53,15 +41,9 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
-# CRITICAL CORS SETTINGS FOR CLOUD RUN
+# CORS Settings
 CORS_EXPOSE_HEADERS = ['Authorization']
 CORS_ALLOW_ALL_ORIGINS = False
-CORS_ALLOWED_ORIGINS = [
-    'http://localhost:5173',
-    'https://midhung.in',
-    'https://www.midhung.in',
-    'https://jobseeker-69742084525.us-central1.run.app',
-]
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_METHODS = ['DELETE', 'GET', 'OPTIONS', 'PATCH', 'POST', 'PUT']
 CORS_ALLOW_HEADERS = [
@@ -78,20 +60,15 @@ CORS_ALLOW_HEADERS = [
     'pragma',
 ]
 
-# CRITICAL SESSION/COOKIE SETTINGS
+# Session/Cookie Settings
 SESSION_COOKIE_SAMESITE = 'None'
 SESSION_COOKIE_SECURE = True
 SESSION_COOKIE_DOMAIN = None
 SESSION_COOKIE_AGE = 86400
 
-# CSRF SETTINGS
+# CSRF Settings
 CSRF_COOKIE_SECURE = True
 CSRF_COOKIE_SAMESITE = 'None'
-CSRF_TRUSTED_ORIGINS = [
-    'https://midhung.in',
-    'https://www.midhung.in',
-    'https://jobseeker-69742084525.us-central1.run.app',
-]
 
 ROOT_URLCONF = 'backend.urls'
 
@@ -114,7 +91,7 @@ TEMPLATES = [
 ASGI_APPLICATION = 'backend.asgi.application'
 WSGI_APPLICATION = 'backend.wsgi.application'
 
-# Database configuration remains the same
+# Database Configuration
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
@@ -131,7 +108,7 @@ DATABASES['default']['OPTIONS'] = {
     'options': '-c default_transaction_isolation=serializable'
 }
 
-# Password validation
+# Password Validation
 AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
     {'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator'},
@@ -148,7 +125,7 @@ STATIC_URL = 'static/'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 AUTH_USER_MODEL = 'account.CustomUser'
 
-# REST FRAMEWORK SETTINGS
+# REST Framework Settings
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'account.authentication.CustomJWTAuthentication',
@@ -158,11 +135,10 @@ REST_FRAMEWORK = {
     ),
 }
 
-# CRITICAL JWT SETTINGS FOR CLOUD RUN
+# JWT Settings
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=60),  # Increased from 30
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
-    'ROTATE_REFRESH_TOKENS': False,  # Keep False to avoid complications
+    'ROTATE_REFRESH_TOKENS': False,
     'BLACKLIST_AFTER_ROTATION': True,
     'UPDATE_LAST_LOGIN': False,
     'ALGORITHM': 'HS256',
@@ -178,17 +154,16 @@ SIMPLE_JWT = {
     'TOKEN_TYPE_CLAIM': 'token_type',
     'JTI_CLAIM': 'jti',
     'SLIDING_TOKEN_REFRESH_EXP_CLAIM': 'refresh_exp',
-    'SLIDING_TOKEN_LIFETIME': timedelta(minutes=60),
     'SLIDING_TOKEN_REFRESH_LIFETIME': timedelta(days=7),
     'AUTH_COOKIE': 'access_token',
     'REFRESH_COOKIE': 'refresh_token',
     'AUTH_COOKIE_SECURE': True,
     'AUTH_COOKIE_HTTP_ONLY': True,
-    'AUTH_COOKIE_SAMESITE': 'None',  # CRITICAL for cross-origin
+    'AUTH_COOKIE_SAMESITE': 'None',
     'AUTH_COOKIE_DOMAIN': None,
 }
 
-# LOGGING FOR DEBUGGING
+# Logging
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
@@ -220,7 +195,7 @@ LOGGING = {
     },
 }
 
-# Email settings
+# Email Settings
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = 'smtp.gmail.com'
 EMAIL_PORT = 587
@@ -228,23 +203,25 @@ EMAIL_USE_TLS = True
 EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER')
 EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD')
 
-# Razorpay settings
+# Razorpay Settings
 RAZORPAY_KEY_ID = os.getenv('RAZORPAY_KEY_ID')
 RAZORPAY_KEY_SECRET = os.getenv('RAZORPAY_KEY_SECRET')
+
+# Cloudinary Storage
 CLOUDINARY_STORAGE = {
     'CLOUD_NAME': os.getenv('CLOUDINARY_CLOUD_NAME'),
     'API_KEY': os.getenv('CLOUDINARY_API_KEY'),
     'API_SECRET': os.getenv('CLOUDINARY_API_SECRET'),
 }
 
-# Configure Cloudinary - CRITICAL: ADD THIS
 cloudinary.config(
     cloud_name=os.getenv('CLOUDINARY_CLOUD_NAME'),
     api_key=os.getenv('CLOUDINARY_API_KEY'),
     api_secret=os.getenv('CLOUDINARY_API_SECRET'),
     secure=True
 )
-BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Media Settings
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 os.makedirs(MEDIA_ROOT, exist_ok=True)
@@ -254,7 +231,8 @@ DEFAULT_FILE_STORAGE = 'cloudinary_storage.storage.MediaCloudinaryStorage'
 FILE_UPLOAD_MAX_MEMORY_SIZE = 5242880  # 5MB
 DATA_UPLOAD_MAX_MEMORY_SIZE = 5242880  # 5MB
 FILE_UPLOAD_PERMISSIONS = 0o644
-# Redis/Channels settings (if using)
+
+# Redis/Channels Settings
 CHANNEL_LAYERS = {
     'default': {
         'BACKEND': 'channels_redis.core.RedisChannelLayer',
