@@ -6,7 +6,7 @@ from django.utils import timezone
 def send_otp_email(user):
     subject = 'Your OTP for verification'
     
-    message = f'thank you for registering... Your OTP for account verification is: {user.otp}'
+    message = f'thank you for registering..... Your OTP for account verification is: {user.otp}'
     from_email = settings.EMAIL_HOST_USER
     recipient_list = [user.email]
     
