@@ -1,7 +1,7 @@
 from django.urls import path
 from .views import RegisterView, LoginView, LogoutView, VerifyOTPView, ForgotPasswordView, ResetPasswordView, AcceptJobApplicationView, JobDetailView, RequestVerificationView, ProfessionalJobApplicationsView, SubmitReviewView,  ConversationView, UnreadMessagesCountView, CreateMissingConversationsView, FileUploadView,FileRecoveryView
 from .views import CheckAuthView,  ProfessionalProfileView, JobCreateView, OpenJobsListView, ApplyToJobView, ClientProjectsView, JobApplicationsListView,  VerifyPaymentView, ClientPendingPaymentsView, ClientTransactionHistoryView,  ProfessionalTransactionHistoryView, UserConversationsView, CheckJobStatesView, WebSocketAuthTokenView
-from .views import PaymentTotalView,ResendOTPView,TokenRefreshView
+from .views import PaymentTotalView,ResendOTPView,TokenRefreshView,ClientProfileView
 from account.views import (
     NotificationListView,
     NotificationCountView,
@@ -49,4 +49,5 @@ urlpatterns = [
     path('notifications/mark-read/', MarkNotificationReadView.as_view(), name='mark-notification-read'),
     path('notifications/mark-all-read/', MarkAllNotificationsReadView.as_view(), name='mark-all-notifications-read'),
      path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'), 
+      path('client/profile/', ClientProfileView.as_view(), name='client-profile'),
 ]

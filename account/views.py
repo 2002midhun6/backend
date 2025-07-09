@@ -61,7 +61,8 @@ from django.http import JsonResponse
 from rest_framework.decorators import api_view, permission_classes
 from django.views.decorators.http import require_http_methods
 from django.views.decorators.csrf import csrf_exempt
-
+from .serializers import ClientProfileSerializer
+from .models import ClientProfile
 @csrf_exempt
 @require_http_methods(["GET"])
 def health_check(request):
@@ -114,7 +115,154 @@ class TokenRefreshView(APIView):
         except Exception as e:
             logger.error(f'Token refresh error: {str(e)}')
             return Response({'error': 'Token refresh failed'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+class ClientProfileView(APIView):
+    permission_classes = [IsAuthenticated]
 
+    def get(self, request):
+        """Fetch the logged-in client's profile"""
+        user = request.user
+        
+        if user.role != 'client':
+            logger.warning(f"Unauthorized profile access attempt by user {user.id} with role {user.role}")
+            return Response(
+                {'error': 'Only clients can access their profile'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        try:
+            profile = ClientProfile.objects.get(user=user)
+            serializer = ClientProfileSerializer(profile, context={'request': request})
+            logger.info(f"Profile retrieved for client {user.id}")
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        except ClientProfile.DoesNotExist:
+            # Return basic user info if no profile exists
+            serializer = ClientProfileSerializer(data={}, context={'request': request})
+            serializer.is_valid()  # Populate read-only fields
+            logger.info(f"No client profile found for user {user.id}, returning user info")
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        """Create a client profile"""
+        user = request.user
+        
+        if user.role != 'client':
+            logger.warning(f"Unauthorized profile creation attempt by user {user.id} with role {user.role}")
+            return Response(
+                {'error': 'Only clients can create a profile'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        if ClientProfile.objects.filter(user=user).exists():
+            logger.warning(f"Profile already exists for user {user.id}")
+            return Response({'error': 'Profile already exists'}, status=status.HTTP_400_BAD_REQUEST)
+
+        serializer = ClientProfileSerializer(data=request.data, context={'request': request})
+        if serializer.is_valid():
+            profile = serializer.save()
+            logger.info(f"Profile created for client {user.id}")
+
+            # Create a notification for profile creation
+            Notification.objects.create(
+                user=user,
+                notification_type='message',
+                title='Profile Created',
+                message='Your client profile has been successfully created.',
+                data={'profile_id': user.id}
+            )
+
+            # Send WebSocket notification
+            try:
+                channel_layer = get_channel_layer()
+                ws_notification_data = {
+                    'type': 'message',
+                    'title': 'Profile Created',
+                    'message': 'Your client profile has been successfully created.',
+                    'notification_id': str(user.id),
+                    'timestamp': timezone.now().isoformat()
+                }
+                async_to_sync(channel_layer.group_send)(
+                    f'notifications_{user.id}',
+                    {
+                        'type': 'send_notification',
+                        'content': ws_notification_data
+                    }
+                )
+                logger.info(f"Sent WebSocket notification for profile creation to user {user.id}")
+            except Exception as e:
+                logger.error(f"Failed to send WebSocket notification for profile creation: {str(e)}")
+
+            return Response(
+                {
+                    'message': 'Profile created successfully',
+                    'profile': serializer.data
+                },
+                status=status.HTTP_201_CREATED
+            )
+        
+        logger.error(f"Profile creation failed for client {user.id}: {serializer.errors}")
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def patch(self, request):
+        """Update the client's profile"""
+        user = request.user
+        
+        if user.role != 'client':
+            logger.warning(f"Unauthorized profile update attempt by user {user.id} with role {user.role}")
+            return Response(
+                {'error': 'Only clients can update their profile'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        try:
+            profile = ClientProfile.objects.get(user=user)
+            serializer = ClientProfileSerializer(profile, data=request.data, partial=True, context={'request': request})
+            if serializer.is_valid():
+                serializer.save()
+                logger.info(f"Profile updated for client {user.id}")
+
+                # Create a notification for profile update
+                Notification.objects.create(
+                    user=user,
+                    notification_type='message',
+                    title='Profile Updated',
+                    message='Your client profile has been successfully updated.',
+                    data={'profile_id': user.id}
+                )
+
+                # Send WebSocket notification
+                try:
+                    channel_layer = get_channel_layer()
+                    ws_notification_data = {
+                        'type': 'message',
+                        'title': 'Profile Updated',
+                        'message': 'Your client profile has been successfully updated.',
+                        'notification_id': str(user.id),
+                        'timestamp': timezone.now().isoformat()
+                    }
+                    async_to_sync(channel_layer.group_send)(
+                        f'notifications_{user.id}',
+                        {
+                            'type': 'send_notification',
+                            'content': ws_notification_data
+                        }
+                    )
+                    logger.info(f"Sent WebSocket notification for profile update to user {user.id}")
+                except Exception as e:
+                    logger.error(f"Failed to send WebSocket notification for profile update: {str(e)}")
+
+                return Response(
+                    {
+                        'message': 'Profile updated successfully',
+                        'profile': serializer.data
+                    },
+                    status=status.HTTP_200_OK
+                )
+            
+            logger.error(f"Profile update failed for client {user.id}: {serializer.errors}")
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        except ClientProfile.DoesNotExist:
+            return Response({'error': 'Profile not found, please create a profile first'}, status=status.HTTP_404_NOT_FOUND)
 class NotificationListView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = NotificationSerializer
@@ -782,8 +930,8 @@ class ResetPasswordView(APIView):
                 status=status.HTTP_200_OK
             )
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
+import cloudinary.api
+logger = logging.getLogger(__name__)
 class ProfessionalProfileView(APIView):
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]  # Support file uploads
@@ -861,31 +1009,42 @@ class ProfessionalProfileView(APIView):
                 {'error': 'An unexpected error occurred while creating the profile'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-
+    
     def patch(self, request):
         """Update the professional profile"""
         user = request.user
+        logger = logging.getLogger(__name__)
         
         logger.info(f"PATCH /api/profile/ - User: {user.id}, Data: {request.data}")
         logger.info(f"PATCH /api/profile/ - Files: {request.FILES}")
 
         if not user.is_authenticated:
+            logger.warning(f"Unauthorized access attempt by user {user.id}")
             return Response({'error': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
 
         if getattr(user, 'role', None) != 'professional':
+            logger.warning(f"Non-professional user {user.id} attempted to update profile")
             return Response({'error': 'Only professionals can update a profile'}, status=status.HTTP_403_FORBIDDEN)
 
         try:
             profile = ProfessionalProfile.objects.get(user=user)
             
-            # Test Cloudinary configuration before processing if file is uploaded
+            # Check if critical fields are being updated
+            critical_fields = ['bio', 'skills', 'experience_years', 'portfolio_links', 'verify_doc']
+            is_critical_update = any(field in request.data or field in request.FILES for field in critical_fields)
+            
+            if is_critical_update and profile.verify_status == 'Verified':
+                logger.info(f"Resetting verify_status to Pending for user {user.id} due to profile update")
+                profile.verify_status = 'Pending'
+                profile.denial_reason = None
+                profile.save(update_fields=['verify_status', 'denial_reason'])
+
             if 'verify_doc' in request.FILES:
                 try:
-                    import cloudinary.api
                     cloudinary.api.ping()
                     logger.info("Cloudinary configuration verified for profile update")
                 except Exception as e:
-                    logger.error(f"Cloudinary configuration error: {e}")
+                    logger.error(f"Cloudinary configuration error: {str(e)}")
                     return Response(
                         {'error': f'File upload service error: {str(e)}'},
                         status=status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -893,32 +1052,42 @@ class ProfessionalProfileView(APIView):
             
             serializer = ProfessionalProfileSerializer(profile, data=request.data, partial=True, context={'request': request})
             if serializer.is_valid():
+                # Delete old verification document if a new one is uploaded
+                if 'verify_doc' in request.FILES and profile.verify_doc:
+                    logger.info(f"Deleting old verification document for user {user.id}")
+                    
+                
                 updated_profile = serializer.save()
                 
                 logger.info(f"Profile updated successfully for user {user.id}")
                 if updated_profile.verify_doc:
                     logger.info(f"Verification document uploaded/updated: {updated_profile.verify_doc.url}")
                 
+                # Add re-verification message if status was reset
+                message = 'Profile updated successfully'
+                if is_critical_update and updated_profile.verify_status == 'Pending':
+                    message += '. Your verification status has been reset to Pending. Please submit a verification request.'
+                
                 return Response({
-                    'message': 'Profile updated successfully',
+                    'message': message,
                     'profile': ProfessionalProfileSerializer(updated_profile).data
                 }, status=status.HTTP_200_OK)
             else:
-                logger.error(f"Profile update failed with errors: {serializer.errors}")
+                logger.error(f"Profile update failed with serializer errors: {serializer.errors}")
                 return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
                 
         except ProfessionalProfile.DoesNotExist:
+            logger.error(f"Profile not found for user {user.id}")
             return Response(
                 {'error': 'Profile not found. Please create a profile first.'}, 
                 status=status.HTTP_404_NOT_FOUND
             )
         except Exception as e:
-            logger.error(f"Unexpected error in profile update: {str(e)}")
+            logger.exception(f"Unexpected error in profile update for user {user.id}: {str(e)}")
             return Response(
-                {'error': 'An unexpected error occurred while updating the profile'},
+                {'error': f'An unexpected error occurred while updating the profile: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-
     def delete(self, request):
         """Delete the professional profile"""
         user = request.user

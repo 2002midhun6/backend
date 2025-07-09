@@ -4,6 +4,9 @@ from .models import CustomUser,ProfessionalProfile,JobApplication
 from .models import Job
 from backend.utils import send_otp_email
 import random
+import json
+import re
+import cloudinary.uploader
 from django.utils.timezone import now
 from django.core.mail import send_mail
 from django.conf import settings
@@ -13,8 +16,64 @@ from .models import Complaint,Conversation,Message
 from rest_framework import serializers
 from .models import Message
 import urllib.parse
-from .models import Notification
+import re
+import logging
+from .models import Notification,ClientProfile
+logger = logging.getLogger(__name__)
+class ClientProfileSerializer(serializers.ModelSerializer):
+    username = serializers.CharField(source='user.name', read_only=True)
+    email = serializers.EmailField(source='user.email', read_only=True)
+    role = serializers.CharField(source='user.role', read_only=True)
+    is_verified = serializers.BooleanField(source='user.is_verified', read_only=True)
 
+    class Meta:
+        model = ClientProfile
+        fields = [
+            'username',
+            'email',
+            'role',
+            'is_verified',
+            'company_name',
+            'phone_number',
+            'address'
+        ]
+        read_only_fields = ['username', 'email', 'role', 'is_verified']
+
+    def validate_company_name(self, value):
+        """Validate company name"""
+        if value and len(value.strip()) < 2:
+            raise serializers.ValidationError("Company name must be at least 2 characters long")
+        if value and len(value.strip()) > 255:
+            raise serializers.ValidationError("Company name cannot exceed 255 characters")
+        return value.strip() if value else value
+
+    def validate_phone_number(self, value):
+        """Validate phone number"""
+        if value and not re.match(r'^\+\d{1,14}$', value):
+            raise serializers.ValidationError("Phone number must include country code (e.g., +1234567890) and be valid")
+        if value and len(value) > 20:
+            raise serializers.ValidationError("Phone number cannot exceed 20 characters")
+        return value
+
+    def validate_address(self, value):
+        """Validate address"""
+        if value and len(value.strip()) < 5:
+            raise serializers.ValidationError("Address must be at least 5 characters long")
+        if value and len(value.strip()) > 500:
+            raise serializers.ValidationError("Address cannot exceed 500 characters")
+        return value.strip() if value else value
+
+    def create(self, validated_data):
+        """Create a client profile"""
+        user = self.context['request'].user
+        if ClientProfile.objects.filter(user=user).exists():
+            raise serializers.ValidationError("Client profile already exists")
+        validated_data['user'] = user
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        """Update a client profile"""
+        return super().update(instance, validated_data)
 class NotificationSerializer(serializers.ModelSerializer):
     class Meta:
         model = Notification
@@ -205,23 +264,24 @@ class UserSerializer(serializers.ModelSerializer):
 class ProfessionalProfileSerializer(serializers.ModelSerializer):
     user = UserSerializer(read_only=True)
     verify_doc_url = serializers.SerializerMethodField()
-    
+
     class Meta:
         model = ProfessionalProfile
         fields = [
+            'user',
             'bio',
             'skills',
             'experience_years',
             'availability_status',
             'portfolio_links',
             'verify_status',
-            'verify_doc',        # Cloudinary field
-            'verify_doc_url',    # URL for the document
-            'avg_rating',
-            'user',
             'verify_doc',
+            'verify_doc_url',
+            'avg_rating',
             'denial_reason',
         ]
+        read_only_fields = ['verify_status', 'verify_doc_url', 'avg_rating', 'denial_reason']
+
     def get_verify_doc_url(self, obj):
         """Return the full URL of the verification document if it exists"""
         return obj.get_verify_doc_url()
@@ -232,89 +292,93 @@ class ProfessionalProfileSerializer(serializers.ModelSerializer):
             # Check file size (max 5MB)
             if hasattr(value, 'size') and value.size > 5 * 1024 * 1024:
                 raise serializers.ValidationError("File size cannot exceed 5MB")
-            
+
             # Check file type
-            allowed_types = [
-                'application/pdf',
-                'image/jpeg',
-                'image/jpg',
-                'image/png',
-                'image/gif',
-                'application/msword',
-                'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-            ]
-            
+            allowed_types = {
+                'application/pdf': 'raw',
+                'image/jpeg': 'image',
+                'image/jpg': 'image',
+                'image/png': 'image',
+                'image/gif': 'image',
+                'application/msword': 'raw',
+                'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'raw'
+            }
             if hasattr(value, 'content_type') and value.content_type not in allowed_types:
                 raise serializers.ValidationError(
-                    "Unsupported file type. Please upload PDF, DOC, or image files."
+                    "Unsupported file type. Please upload PDF, DOC, or image (JPEG, PNG, GIF) files."
                 )
-        
+
         return value
 
     def validate_bio(self, value):
         """Validate bio field"""
-        if value and len(value.strip()) < 10:
-            raise serializers.ValidationError("Bio must be at least 10 characters long")
-        if value and len(value.strip()) > 500:
-            raise serializers.ValidationError("Bio cannot exceed 500 characters")
-        return value.strip() if value else value
+        if value:
+            value = value.strip()
+            if len(value) < 10:
+                raise serializers.ValidationError("Bio must be at least 10 characters long")
+            if len(value) > 500:
+                raise serializers.ValidationError("Bio cannot exceed 500 characters")
+        return value
 
     def validate_skills(self, value):
         """Validate skills field"""
+        # Handle JSON string input
         if isinstance(value, str):
-            # If it's a string, try to parse as JSON
-            import json
             try:
                 value = json.loads(value)
             except json.JSONDecodeError:
-                # If not JSON, split by comma
-                value = [skill.strip() for skill in value.split(',') if skill.strip()]
-        
+                raise serializers.ValidationError("Skills must be a valid JSON list or array")
+
         if not isinstance(value, list):
             raise serializers.ValidationError("Skills must be a list")
-        
+
         if len(value) == 0:
             raise serializers.ValidationError("At least one skill is required")
-        
+
         if len(value) > 10:
             raise serializers.ValidationError("Cannot add more than 10 skills")
-        
+
         # Validate each skill
+        validated_skills = []
         for skill in value:
-            if not isinstance(skill, str) or len(skill.strip()) == 0:
+            skill = skill.strip()
+            if not isinstance(skill, str) or not skill:
                 raise serializers.ValidationError("Each skill must be a non-empty string")
-            if len(skill.strip()) > 50:
-                raise serializers.ValidationError("Each skill cannot exceed 50 characters")
-        
-        return [skill.strip() for skill in value]
+            if len(skill) > 50:
+                raise serializers.ValidationError(f"Skill '{skill}' cannot exceed 50 characters")
+            validated_skills.append(skill)
+
+        return validated_skills
 
     def validate_portfolio_links(self, value):
         """Validate portfolio links"""
+        # Handle JSON string input
         if isinstance(value, str):
-            import json
             try:
                 value = json.loads(value)
             except json.JSONDecodeError:
-                value = [link.strip() for link in value.split(',') if link.strip()]
-        
+                raise serializers.ValidationError("Portfolio links must be a valid JSON list or array")
+
         if not isinstance(value, list):
             raise serializers.ValidationError("Portfolio links must be a list")
-        
+
         if len(value) > 5:
             raise serializers.ValidationError("Cannot add more than 5 portfolio links")
-        
+
         # Validate each URL
-        import re
         url_pattern = re.compile(
             r'^(https?://)?([\w.-]+)\.([a-z]{2,6})([/\w.-]*)*/?$',
             re.IGNORECASE
         )
-        
+        validated_links = []
         for link in value:
+            link = link.strip()
             if link and not url_pattern.match(link):
                 raise serializers.ValidationError(f"Invalid URL: {link}")
-        
-        return [link.strip() for link in value if link.strip()]
+            if link:
+                validated_links.append(link)
+
+        return validated_links
 
     def validate_experience_years(self, value):
         """Validate experience years"""
@@ -325,31 +389,46 @@ class ProfessionalProfileSerializer(serializers.ModelSerializer):
         return value
 
     def update(self, instance, validated_data):
-        """Custom update method to handle verify_doc field properly"""
-        # Handle verify_doc field separately
+        """Custom update method to handle verify_doc and re-verification logic"""
+        # Log the update attempt
+        logger.info(f"Updating profile for user {instance.user.id}: {validated_data}")
+
+        # Check for critical field updates
+        critical_fields = ['bio', 'skills', 'experience_years', 'portfolio_links', 'verify_doc']
+        is_critical_update = any(field in validated_data for field in critical_fields)
+
+        # Reset verify_status to Pending if critical fields are updated and status is Verified
+        if is_critical_update and instance.verify_status == 'Verified':
+            logger.info(f"Resetting verify_status to Pending for user {instance.user.id} due to critical field update")
+            instance.verify_status = 'Pending'
+            instance.denial_reason = None
+
+        # Handle verify_doc field
         verify_doc = validated_data.pop('verify_doc', None)
-        
+        if verify_doc is not None and instance.verify_doc:
+            try:
+                # Determine resource_type based on existing document's content type
+                content_type = instance.verify_doc.file.content_type
+                resource_type = 'image' if content_type.startswith('image/') else 'raw'
+                logger.info(f"Deleting old verification document: public_id={instance.verify_doc.public_id}, resource_type={resource_type}")
+                cloudinary.uploader.destroy(instance.verify_doc.public_id, resource_type=resource_type)
+                logger.info(f"Successfully deleted old verification document for user {instance.user.id}")
+            except Exception as e:
+                logger.warning(f"Failed to delete old verification document for user {instance.user.id}: {str(e)}")
+                # Continue with update even if deletion fails
+
         # Update other fields
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
-        
-        # Handle verify_doc field
+
+        # Set new document if provided
         if verify_doc is not None:
-            if instance.verify_doc:
-                # Delete old document from Cloudinary
-                try:
-                    import cloudinary.uploader
-                    cloudinary.uploader.destroy(instance.verify_doc.public_id, resource_type='auto')
-                    logger.info(f"Deleted old verification document for user {instance.user.id}")
-                except Exception as e:
-                    logger.warning(f"Failed to delete old verification document: {e}")
-            
-            # Set new document
             instance.verify_doc = verify_doc
             logger.info(f"Updated verification document for user {instance.user.id}")
-        
+
         # Save the instance
         instance.save()
+        logger.info(f"Profile updated successfully for user {instance.user.id}")
         return instance
 # accounts/serializers.py
 class JobSerializer(serializers.ModelSerializer):

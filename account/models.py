@@ -94,7 +94,19 @@ class CustomUser(AbstractUser):
     def __str__(self):
         return self.email
 
-# accounts/models.py
+
+class ClientProfile(models.Model):
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, primary_key=True, related_name='client_profile')
+    company_name = models.CharField(max_length=255, blank=True, null=True)
+    phone_number = models.CharField(max_length=20, blank=True, null=True)
+    address = models.TextField(max_length=500, blank=True, null=True)
+
+    def __str__(self):
+        return f"{self.user.name}'s Client Profile"
+
+    class Meta:
+        verbose_name = "Client Profile"
+        verbose_name_plural = "Client Profiles"
 class ProfessionalProfile(models.Model):
     AVAILABILITY_CHOICES = [
         ('Available', 'Available'),
