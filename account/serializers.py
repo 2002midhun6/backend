@@ -156,7 +156,7 @@ class PaymentSerializer(serializers.ModelSerializer):
         try:
             representation = super().to_representation(instance)
             
-            # Always convert amount to paisa for Razorpay
+            
             representation['amount'] = int(float(instance.amount) * 100) if instance.amount else 0
             representation['order_id'] = instance.razorpay_order_id
             representation['key'] = settings.RAZORPAY_KEY_ID
@@ -168,33 +168,117 @@ class PaymentSerializer(serializers.ModelSerializer):
             else:
                 payment_desc = 'Remaining Payment'
                 
-            # Use nested job_application.job_title for description
+            
             job_title = representation.get('job_application', {}).get('job_title', 'Unknown Job')
             representation['description'] = f'{payment_desc} for Job: {job_title}'
             
-            # Debug log
-            print(f"PaymentSerializer debug: Original amount={instance.amount}, Converted amount={representation['amount']}")
             
             return representation
         except Exception as e:
-            print(f"Error in PaymentSerializer.to_representation: {str(e)}")
+           
             return super().to_representation(instance)
+from rest_framework import serializers
+from .models import CustomUser
+import logging
+import re
+
+logger = logging.getLogger(__name__)
+
 class UserRegistrationSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True)
-    
+
     class Meta:
         model = CustomUser
         fields = ['email', 'name', 'role', 'password']
-        
-    def create(self, validated_data):
-        user = CustomUser.objects.create_user(
-            email=validated_data['email'],
-            name=validated_data['name'],
-            role=validated_data['role'],
-            password=validated_data['password']
-        )
-        return user
+        extra_kwargs = {
+            'email': {'validators': []},  # Remove default validators including unique validation
+        }
 
+    def validate_email(self, value):
+        logger.debug(f"Validating email: {value}")
+        if not re.match(r'^[\w\.-]+@[\w\.-]+\.\w+$', value):
+            logger.warning(f"Invalid email format: {value}")
+            raise serializers.ValidationError("Invalid email address.")
+        return value
+
+    def validate_name(self, value):
+        logger.debug(f"Validating name: {value}")
+        value = value.strip()
+        if not value:
+            logger.warning("Name is empty")
+            raise serializers.ValidationError("Name is required.")
+        if len(value) > 100:
+            logger.warning(f"Name too long: {value}")
+            raise serializers.ValidationError("Name must be 100 characters or less.")
+        return value
+
+    def validate_role(self, value):
+        logger.debug(f"Validating role: {value}")
+        valid_roles = [choice[0] for choice in CustomUser.ROLE_CHOICES]
+        if value not in valid_roles:
+            logger.warning(f"Invalid role: {value}")
+            raise serializers.ValidationError(f"Role must be one of: {', '.join(valid_roles)}.")
+        return value
+
+    def validate_password(self, value):
+        logger.debug("Validating password")
+        password_regex = r'^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$'
+        if not re.match(password_regex, value):
+            logger.warning("Password does not meet strength requirements")
+            raise serializers.ValidationError(
+                "Password must be at least 8 characters long and include an uppercase letter, "
+                "lowercase letter, number, and special character."
+            )
+        return value
+
+    def validate(self, data):
+        logger.debug(f"Validating full data: {data}")
+        email = data.get('email')
+        
+        if not email:
+            logger.error("Email field missing in data")
+            raise serializers.ValidationError({"email": "Email is required."})
+            
+        try:
+            existing_user = CustomUser.objects.get(email=email)
+            if existing_user.is_verified:
+                logger.warning(f"Registration failed: Email {email} is already verified")
+                raise serializers.ValidationError({"email": "A user with this email is already registered and verified."})
+            
+            logger.info(f"Unverified user found for email: {email}. Will update existing user.")
+            data['existing_user'] = existing_user 
+        except CustomUser.DoesNotExist:
+            logger.info(f"No existing user found for email: {email}. Will create new user.")
+            data['existing_user'] = None
+        return data
+
+    def create(self, validated_data):
+        existing_user = validated_data.pop('existing_user', None)
+        
+        if existing_user:
+            # Update existing unverified user
+            logger.info(f"Updating existing unverified user with email: {validated_data['email']}")
+            existing_user.name = validated_data['name']
+            existing_user.role = validated_data['role']
+            existing_user.set_password(validated_data['password'])
+            
+            # Generate new OTP
+            existing_user.otp = str(random.randint(100000, 999999))
+            existing_user.otp_created_at = now()
+            existing_user.save()
+            
+            logger.info(f"Updated user {existing_user.email} with new OTP: {existing_user.otp}")
+            return existing_user
+        else:
+            # Create new user
+            logger.info(f"Creating new user with email: {validated_data['email']}")
+            user = CustomUser.objects.create_user(
+                email=validated_data['email'],
+                name=validated_data['name'],
+                role=validated_data['role'],
+                password=validated_data['password']
+            )
+            return user
 class UserLoginSerializer(serializers.Serializer):
     email = serializers.EmailField()
     password = serializers.CharField()
@@ -209,9 +293,9 @@ class OTPVerificationSerializer(serializers.Serializer):
             user = CustomUser.objects.get(email=data['email'])
             if user.otp != data['otp']:
                 raise serializers.ValidationError("Invalid OTP.")
-            user.is_active = True  # Activate user
+            user.is_active = True  
             user.is_verified = True
-            user.otp = None  # Remove OTP after verification
+            user.otp = None  
             user.save()
         except CustomUser.DoesNotExist:
             raise serializers.ValidationError("User not found.")
@@ -222,16 +306,16 @@ class ForgotPasswordSerializer(serializers.Serializer):
     def validate(self, data):
         try:
             user = CustomUser.objects.get(email=data['email'])
-            # Generate a new OTP for password reset
+            
             user.otp = str(random.randint(100000, 999999))
             user.otp_created_at = now()
             user.save()
-            send_otp_email(user)  # Reuse the existing send_otp_email function
+            send_otp_email(user)  
         except CustomUser.DoesNotExist:
             raise serializers.ValidationError("No account found with this email.")
         return data
 
-# Reset Password Serializer
+
 class ResetPasswordSerializer(serializers.Serializer):
     email = serializers.EmailField()
     otp = serializers.CharField(max_length=6)
@@ -283,17 +367,17 @@ class ProfessionalProfileSerializer(serializers.ModelSerializer):
         read_only_fields = ['verify_status', 'verify_doc_url', 'avg_rating', 'denial_reason']
 
     def get_verify_doc_url(self, obj):
-        """Return the full URL of the verification document if it exists"""
+        
         return obj.get_verify_doc_url()
 
     def validate_verify_doc(self, value):
-        """Validate the uploaded verification document"""
+       
         if value:
-            # Check file size (max 5MB)
+            
             if hasattr(value, 'size') and value.size > 5 * 1024 * 1024:
                 raise serializers.ValidationError("File size cannot exceed 5MB")
 
-            # Check file type
+            
             allowed_types = {
                 'application/pdf': 'raw',
                 'image/jpeg': 'image',
@@ -311,7 +395,7 @@ class ProfessionalProfileSerializer(serializers.ModelSerializer):
         return value
 
     def validate_bio(self, value):
-        """Validate bio field"""
+        
         if value:
             value = value.strip()
             if len(value) < 10:

@@ -14,6 +14,7 @@ urlpatterns = [
    
     path('register/', RegisterView.as_view(), name='register'),
     path('login/', LoginView.as_view(), name='login'),
+    
     path('logout/', LogoutView.as_view(), name='logout'),
     path('verify-otp/', VerifyOTPView.as_view(), name='verify-otp'),
     path('forgot-password/', ForgotPasswordView.as_view(), name='forgot-password'),
@@ -48,6 +49,6 @@ urlpatterns = [
     path('notifications/count/', NotificationCountView.as_view(), name='notification-count'),
     path('notifications/mark-read/', MarkNotificationReadView.as_view(), name='mark-notification-read'),
     path('notifications/mark-all-read/', MarkAllNotificationsReadView.as_view(), name='mark-all-notifications-read'),
-     path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'), 
-      path('client/profile/', ClientProfileView.as_view(), name='client-profile'),
+    path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'), 
+    path('client/profile/', ClientProfileView.as_view(), name='client-profile'),
 ]

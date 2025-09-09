@@ -753,43 +753,35 @@ class CheckAuthView(APIView):
         except:
             return Response({'isAuthenticated': False})
 class RegisterView(APIView):
-    permission_classes = [AllowAny]  # Optional, depending on your requirements
+    permission_classes = [AllowAny]
     authentication_classes = []
+    
     def post(self, request):
+        logger.info(f"Registration attempt with data: {request.data}")
         serializer = UserRegistrationSerializer(data=request.data)
+        
         if not serializer.is_valid():
+            logger.error(f"Registration validation failed: {serializer.errors}")
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        user = serializer.save()
-        send_otp_email(user)  # Send OTP email
-        return Response({'message': 'OTP sent to email. Verify your email to activate your account.'}, status=status.HTTP_201_CREATED)
-        
-        # refresh = RefreshToken.for_user(user)
-
-        # # Set tokens in HTTP-only cookies
-        # response = Response({
-        #     'user': {
-        #         'email': user.email,
-        #         'name': user.name,
-        #         'role': user.role
-        #     }
-        # }, status=status.HTTP_201_CREATED)
-        # response.set_cookie(
-        #     key='access_token',
-        #     value=str(refresh.access_token),
-        #     httponly=True,
-        #     secure=not settings.DEBUG,  # Secure in production
-        #     samesite='Lax'
-        # )
-        # response.set_cookie(
-        #     key='refresh_token',
-        #     value=str(refresh),
-        #     httponly=True,
-        #     secure=not settings.DEBUG,
-        #     samesite='Lax'
-        # )
-        # return response
-
+        try:
+            user = serializer.save()
+            
+            # Check if this was an existing unverified user
+            existing_user = serializer.validated_data.get('existing_user')
+            if existing_user:
+                message = 'A new OTP has been sent to your email. Please verify to activate your account.'
+                logger.info(f"Updated existing unverified user: {user.email}")
+            else:
+                message = 'OTP sent to email. Verify your email to activate your account.'
+                logger.info(f"Created new user: {user.email}")
+            
+            send_otp_email(user)  # Send OTP email
+            return Response({'message': message}, status=status.HTTP_201_CREATED)
+            
+        except Exception as e:
+            logger.error(f"Registration error during user creation: {str(e)}")
+            return Response({'error': 'Registration failed. Please try again.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 class LoginView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
@@ -838,14 +830,14 @@ class LoginView(APIView):
             
             response = Response(response_data, status=status.HTTP_200_OK)
 
-            # Set cookies with proper settings for cross-origin
+            
             response.set_cookie(
                 key='access_token',
                 value=access_token,
                 httponly=True,
                 secure=True,
-                samesite='None',  # Critical for cross-origin
-                max_age=60 * 60,  # 1 hour
+                samesite='None',  
+                max_age=60 * 60,  
                 path='/'
             )
             
@@ -854,8 +846,8 @@ class LoginView(APIView):
                 value=str(refresh),
                 httponly=True,
                 secure=True,
-                samesite='None',  # Critical for cross-origin
-                max_age=60 * 60 * 24 * 7,  # 7 days
+                samesite='None', 
+                max_age=60 * 60 * 24 * 7,  
                 path='/'
             )
             
@@ -868,7 +860,7 @@ class LoginView(APIView):
 
 
 class LogoutView(APIView):
-    permission_classes = [AllowAny]  # Optional, depending on your requirements
+    permission_classes = [AllowAny] 
     authentication_classes = []
     def post(self, request):
         try:
@@ -877,7 +869,7 @@ class LogoutView(APIView):
                 return Response({'error': 'No refresh token provided'}, status=status.HTTP_400_BAD_REQUEST)
 
             token = RefreshToken(refresh_token)
-            token.blacklist()  # Blacklist the token
+            token.blacklist()  
 
             response = Response({'message': 'Logged out successfully'}, status=status.HTTP_205_RESET_CONTENT)
             response.delete_cookie('access_token')
