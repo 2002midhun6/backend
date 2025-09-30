@@ -266,7 +266,7 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
             existing_user.otp = str(random.randint(100000, 999999))
             existing_user.otp_created_at = now()
             existing_user.save()
-            
+            send_otp_email(existing_user, purpose='verification') 
             logger.info(f"Updated user {existing_user.email} with new OTP: {existing_user.otp}")
             return existing_user
         else:
@@ -278,6 +278,7 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
                 role=validated_data['role'],
                 password=validated_data['password']
             )
+            send_otp_email(user, purpose='verification') 
             return user
 class UserLoginSerializer(serializers.Serializer):
     email = serializers.EmailField()
@@ -306,15 +307,13 @@ class ForgotPasswordSerializer(serializers.Serializer):
     def validate(self, data):
         try:
             user = CustomUser.objects.get(email=data['email'])
-            
             user.otp = str(random.randint(100000, 999999))
             user.otp_created_at = now()
             user.save()
-            send_otp_email(user)  
+            send_otp_email(user, purpose='password_reset')  # Changed here
         except CustomUser.DoesNotExist:
             raise serializers.ValidationError("No account found with this email.")
         return data
-
 
 class ResetPasswordSerializer(serializers.Serializer):
     email = serializers.EmailField()

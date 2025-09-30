@@ -7,6 +7,7 @@ from rest_framework.views import APIView
 from django.contrib.auth import authenticate
 from django.db.models import Q
 from rest_framework.parsers import MultiPartParser, FormParser
+from django.utils.timezone import now
 from rest_framework_simplejwt.tokens import RefreshToken
 from .serializers import UserRegistrationSerializer, UserLoginSerializer, ForgotPasswordSerializer, ResetPasswordSerializer,ProfessionalProfileSerializer
 from .models import CustomUser,ProfessionalProfile,Job,JobApplication
@@ -38,6 +39,7 @@ import razorpay
 
 from .serializers import PaymentSerializer
 import traceback
+import random
 from .models import Complaint
 from rest_framework import status, generics
 from rest_framework.permissions import IsAuthenticated, IsAdminUser
@@ -889,14 +891,26 @@ class VerifyOTPView(APIView):
 class ResendOTPView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
+    
     def post(self, request):
-        serializer = ForgotPasswordSerializer(data=request.data)
-        if serializer.is_valid():
+        email = request.data.get('email')
+        purpose = request.data.get('purpose', 'verification') 
+        
+        try:
+            user = CustomUser.objects.get(email=email)
+            user.otp = str(random.randint(100000, 999999))
+            user.otp_created_at = now()
+            user.save()
+            send_otp_email(user, purpose=purpose)
             return Response(
                 {'message': 'OTP resent successfully to your email.'},
                 status=status.HTTP_200_OK
             )
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        except CustomUser.DoesNotExist:
+            return Response(
+                {'error': 'No account found with this email.'},
+                status=status.HTTP_404_NOT_FOUND
+            )
 
 class ForgotPasswordView(APIView):
     permission_classes = [AllowAny]
